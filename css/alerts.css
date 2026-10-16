@@ -426,7 +426,7 @@
 #al-tarjeta {
     position: fixed;
     /* Footer 27px + 15px de separación + safe-area para móviles con notch */
-    bottom: calc(27px + 15px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(27px + 5px + env(safe-area-inset-bottom, 0px));
     right: 20px;
     left: auto !important;
     width: 240px;
