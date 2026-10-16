@@ -1,15 +1,7 @@
 // js/map.js
 // ============================================================
 //  Mapa Leaflet — Antamina
-//  v9: verde suave para zonas en modo libre + filtro de ocultas
-// ------------------------------------------------------------
-//  - ZONAS_OCULTAS: Zona 4 - Tajo (solo en modo manual).
-//  - pintarZonasBaseVerde() pinta SOLO Zona 1, 2, 3 con
-//    verde #22c55e (fillOpacity 0.20).
-//  - Alertas del scraper de Zona 4 SÍ se pintan (con color).
-//  - Alertas manuales de Zona 4 NUNCA se pintan (filtradas
-//    en alertas.js antes de llamar a map.js).
-//  - lugares.json NO se toca.
+//  v10: fillOpacity de alertas bajado a 0.35 (era 0.5).
 // ============================================================
 
 let map;
@@ -24,9 +16,6 @@ let circleAccuracy   = null;
 let watchId          = null;
 let iconoTu          = null;
 
-// ======================================================
-// Zonas ocultas (solo afectan al modo manual desde admin.html)
-// ======================================================
 const ZONAS_OCULTAS = ["Zona 4 - Tajo"];
 
 function esZonaOculta(nombreZona) {
@@ -39,9 +28,6 @@ function esZonaOculta(nombreZona) {
     );
 }
 
-// ======================================================
-// Paleta
-// ======================================================
 const VERDE_BASE = "#22c55e";
 
 const COLORES_NIVEL = {
@@ -58,16 +44,10 @@ function colorDeNivel(nivelKey) {
     return COLORES_NIVEL[nivelKey] || COLORES_NIVEL.roja;
 }
 
-// ======================================================
-// Estado de los polígonos
-// ======================================================
 const poligonosActivos = new Map();
 let zonasData = null;
 let _estiloGlowInyectado = false;
 
-// ======================================================
-// Utilidades
-// ======================================================
 async function cargarZonas() {
     if (zonasData) return zonasData;
     try {
@@ -125,9 +105,6 @@ function quitarGlow(poligono) {
     } catch (e) {}
 }
 
-// ======================================================
-// ILUMINAR DISTRITO (rayo + punto)
-// ======================================================
 export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     if (!map) return null;
 
@@ -186,9 +163,6 @@ export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     };
 }
 
-// ======================================================
-// ILUMINAR ZONA DESDE GEOJSON
-// ======================================================
 export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     if (!map) return null;
 
@@ -313,9 +287,6 @@ export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     };
 }
 
-// ======================================================
-// CREAR MAPA
-// ======================================================
 export function crearMapa(idDiv) {
 
     map = L.map(idDiv, { zoomControl: false });
@@ -349,9 +320,6 @@ export function crearMapa(idDiv) {
     return { cargarGeoJSON, irA, limpiarSeleccion, filtrarLugares };
 }
 
-// ======================================================
-// ENGANCHE BOTÓN UBICACIÓN
-// ======================================================
 function engancharBotonUbicacion() {
     const btnUbicacion = document.getElementById("btn-ubicacion");
     if (!btnUbicacion) {
@@ -374,9 +342,6 @@ function engancharBotonUbicacion() {
     btnUbicacion.dataset.listener = "1";
 }
 
-// ======================================================
-// MOSTRAR MI UBICACIÓN
-// ======================================================
 function mostrarMiUbicacion() {
     const btn = document.getElementById("btn-ubicacion");
     if (!navigator.geolocation) { alert("Tu navegador no soporta geolocalización."); return; }
@@ -446,9 +411,6 @@ function mostrarMiUbicacion() {
     );
 }
 
-// ======================================================
-// CARGAR GEOJSON (lugares.json)
-// ======================================================
 function cargarGeoJSON(lugares) {
     if (geoLayer) {
         try { geoLayer.remove(); } catch (e) {}
@@ -493,9 +455,6 @@ function cargarGeoJSON(lugares) {
     }
 }
 
-// ======================================================
-// FILTRAR LUGARES
-// ======================================================
 export function filtrarLugares(predicado) {
     if (!geoLayer || typeof predicado !== "function") return 0;
     let visibles = 0;
@@ -538,13 +497,9 @@ function irA(lugar) {
     });
 }
 
-// ======================================================
-// PINTAR POLÍGONO DE ZONA
-// ------------------------------------------------------------
-// - nivelKey === "vigilancia" → verde suave #22c55e
-// - nivelKey !== "vigilancia" → color del nivel + glow
-// - Si nivelKey es null, se deduce del color
-// ======================================================
+// ----------------------------------------------------------
+// PINTAR POLÍGONO DE ZONA — v10 con fillOpacity 0.35
+// ----------------------------------------------------------
 export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKey = null) {
     if (!map) return null;
 
@@ -577,7 +532,8 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKe
 
     const tieneAlerta = nivelKey !== "vigilancia";
     const colorFinal = tieneAlerta ? colorDeNivel(nivelKey) : VERDE_BASE;
-    const fillOp = tieneAlerta ? 0.5 : 0.20;
+    // v10: fillOpacity de alertas bajado de 0.5 a 0.35 (menos intenso, deja ver el mapa)
+    const fillOp = tieneAlerta ? 0.35 : 0.20;
 
     const poligono = L.polygon(latlngs, {
         color: colorFinal,
@@ -613,9 +569,6 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKe
     };
 }
 
-// ======================================================
-// QUITAR UN POLÍGONO
-// ======================================================
 export function quitarPoligonoZona(nombreZona) {
     if (!map) return false;
 
@@ -631,9 +584,6 @@ export function quitarPoligonoZona(nombreZona) {
     return false;
 }
 
-// ======================================================
-// QUITAR TODOS
-// ======================================================
 export function limpiarPoligonosZona() {
     if (!map) return;
     for (const [, entry] of poligonosActivos.entries()) {
@@ -642,26 +592,17 @@ export function limpiarPoligonosZona() {
     poligonosActivos.clear();
 }
 
-// ======================================================
-// CONSULTAR POLÍGONOS ACTIVOS
-// ======================================================
 export function obtenerPoligonosActivos() {
     return Array.from(poligonosActivos.keys());
 }
 
-// ======================================================
-// ¿La zona está en la lista de ocultas?
-// ======================================================
 export function esZonaOcultaExport(nombreZona) {
     return esZonaOculta(nombreZona);
 }
 
-// ======================================================
+// ----------------------------------------------------------
 // PINTAR ZONAS BASE VERDE
-// ------------------------------------------------------------
-// Pinta SOLO las 3 zonas visibles (1, 2, 3) con verde #22c55e.
-// Zona 4 (Tajo) NUNCA se pinta como base.
-// ======================================================
+// ----------------------------------------------------------
 export async function pintarZonasBaseVerde() {
     if (!map) return;
 
@@ -681,5 +622,5 @@ export async function pintarZonasBaseVerde() {
             console.warn("map.js: error pintando zona base:", zona.nombre, e);
         }
     }
-    console.log(`[map] ${pintadas} zonas pintadas en verde #22c55e (ocultas: ${ZONAS_OCULTAS.join(", ")})`);
+    console.log(`[map] ${pintadas} zonas pintadas en verde #22c55e`);
 }
