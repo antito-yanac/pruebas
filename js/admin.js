@@ -2,20 +2,22 @@
 //
 // Panel de Alertas — Antamina
 // ============================================================
-// v6 (2026-10):
-//   - Alertas manuales llevan origen: "manual" para que degraden.
+// v7 (2026-10):
+//   - Modo manual vs automático (flag en sistema/estado_modo).
+//   - Alertas manuales llevan origen: "manual" y degradan.
 //   - Zona 4 - Tajo oculta (reactivable con flag).
-//   - Sección "Alertas Activas" muestra el nivel EFECTIVO
-//     (degradado) y su contador correspondiente.
-//   - Resto igual.
+//   - Alertas Activas muestran nivel EFECTIVO (degradado).
+//   - Recalcula modo cada 15s. Vuelve a automático al expirar
+//     la última zona manual o al liberar todas.
 // ============================================================
 
 import { inicializarFirebase, mostrarToast } from "./notifications.js";
-import { enviarMensajePush, escucharMensajesPush } from "./mensajes.js";
+import { enviarMensajePush, escucharMensajesPush, estadoModo } from "./mensajes.js";
 import { iniciarSesion, cerrarSesion, observarSesion, traducirErrorAuth } from "./auth.js";
 import { NIVELES_ALERTA, calcularNivelEfectivo } from "./alertas.js";
 import { iniciarEstadoCliente } from "./estado-cliente.js";
-import { getFirestore, collection, query, orderBy, limit, onSnapshot }
+import { getFirestore, collection, query, orderBy, limit, onSnapshot,
+         doc, setDoc, serverTimestamp }
     from "https://www.gstatic.com/firebasejs/12.17.0/firebase-firestore.js";
 import { obtenerApp } from "./firebase-app.js";
 
@@ -32,6 +34,13 @@ const ZONAS = [
 ];
 
 const NIVELES_VALIDOS = ["amarilla", "naranja", "roja"];
+
+// ======================================================
+// Modo manual (flag Firestore)
+// ======================================================
+const COLECCION_SISTEMA = "sistema";
+const DOC_MODO = "estado_modo";
+const TIMEOUT_MODO_MS = 8 * 60 * 60 * 1000;   // 8 horas
 
 // ======================================================
 // Referencias DOM
@@ -78,7 +87,8 @@ const estado = {
     ultimaZonaTocada: null,
     alertasActivas: new Map(),
     intervalContadores: null,
-    intervalFirestore: null,
+    intervalModo: null,
+    _ultimoRecalculoModo: 0,
     panelListo: false
 };
 
@@ -193,8 +203,12 @@ async function initPanel() {
         catch (e) { console.warn("estado-cliente (admin):", e); }
 
         escucharAlertasActivas();
+
         if (estado.intervalContadores) clearInterval(estado.intervalContadores);
         estado.intervalContadores = setInterval(actualizarContadores, 1000);
+
+        if (estado.intervalModo) clearInterval(estado.intervalModo);
+        estado.intervalModo = setInterval(actualizarBadgeModo, 2000);
 
         estado.panelListo = true;
     } catch (error) {
@@ -248,15 +262,9 @@ function renderSectores() {
 function engancharEventos() {
     paNaLista.addEventListener("click", (e) => {
         const checkBtn = e.target.closest(".pa-na-check");
-        if (checkBtn) {
-            toggleZona(checkBtn.dataset.distrito);
-            return;
-        }
+        if (checkBtn) { toggleZona(checkBtn.dataset.distrito); return; }
         const pill = e.target.closest(".pa-pill");
-        if (pill) {
-            seleccionarNivel(pill.dataset.distrito, pill.dataset.nivel);
-            return;
-        }
+        if (pill) { seleccionarNivel(pill.dataset.distrito, pill.dataset.nivel); return; }
     });
 
     paNaLista.addEventListener("input", (e) => {
@@ -482,6 +490,12 @@ async function enviarAlertas(activas) {
             }
         }
 
+        // Activar modo manual si se envió al menos 1 alerta
+        if (ok > 0) {
+            const zonasEnviadas = activas.map(a => a.distrito);
+            await escribirModoManual(zonasEnviadas);
+        }
+
         let okMsg = false;
         if (incluirMensaje) {
             if (!tituloMsg || !cuerpoMsg) {
@@ -600,7 +614,7 @@ function escucharAlertasActivas() {
 }
 
 // ======================================================
-// Render "Alertas activas" (con nivel efectivo)
+// Render "Alertas activas"
 // ======================================================
 function renderAlertasActivas() {
     const count = estado.alertasActivas.size;
@@ -697,6 +711,12 @@ function actualizarContadores() {
     if (estado.alertasActivas.size === 0) {
         paAASection.style.display = "none";
     }
+
+    // Recalcular modo cada 15 s
+    if (!estado._ultimoRecalculoModo || (Date.now() - estado._ultimoRecalculoModo) > 15000) {
+        estado._ultimoRecalculoModo = Date.now();
+        recalcularModo().catch(e => console.warn("recalcularModo:", e));
+    }
 }
 
 // ======================================================
@@ -736,6 +756,7 @@ async function liberarZona(distrito) {
         );
         mostrarToast("🛑 Liberada", `${distrito} liberada.`, "info", true);
         mostrarEstado(`✓ ${distrito} liberada.`, "success");
+        setTimeout(() => recalcularModo().catch(() => {}), 1000);
     } catch (e) {
         console.error("Error liberando zona:", e);
         mostrarToast("❌ Error", "No se pudo liberar la zona.", "alerta", true);
@@ -780,6 +801,12 @@ async function liberarTodas(zonas) {
             err++;
         }
     }
+
+    // Volver a modo automático
+    if (ok > 0) {
+        await escribirModoAutomatico();
+    }
+
     const msg = err === 0
         ? `🛑 ${ok} zona${ok > 1 ? "s" : ""} liberada${ok > 1 ? "s" : ""}`
         : `⚠️ ${ok} ok · ${err} fallo${err > 1 ? "s" : ""}`;
@@ -788,69 +815,11 @@ async function liberarTodas(zonas) {
 }
 
 // ======================================================
-// Atajos de teclado
+// Modo manual / automático
 // ======================================================
-function onKeyDown(e) {
-    const t = e.target;
-    const esInput = t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable;
-
-    if (e.ctrlKey && e.key === "Enter") {
-        e.preventDefault();
-        if (!paBtnEnviar.disabled) paBtnEnviar.click();
-        return;
-    }
-
-    if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "l")) {
-        e.preventDefault();
-        if (estado.alertasActivas.size > 0) onClickLiberarTodas();
-        return;
-    }
-
-    if (esInput) return;
-    if (modalConfirm.classList.contains("modal-visible")) return;
-
-    if (["1", "2", "3", "4"].includes(e.key)) {
-        e.preventDefault();
-        const zona = ZONAS.find(z => z.short === e.key);
-        if (zona && !zona.oculta) toggleZona(zona.distrito);
-        return;
-    }
-
-    if (e.shiftKey && !e.ctrlKey && !e.altKey) {
-        const k = e.key.toUpperCase();
-        if (k === "A" || k === "N" || k === "R") {
-            if (!estado.ultimaZonaTocada) {
-                mostrarToast("⚠️ Sin zona", "Primero selecciona una zona con 1, 2 o 3.", "alerta", false);
-                return;
-            }
-            const zona = ZONAS.find(z => z.distrito === estado.ultimaZonaTocada);
-            if (zona && zona.oculta) return;
-
-            const nivel = k === "A" ? "amarilla" : k === "N" ? "naranja" : "roja";
-            e.preventDefault();
-            seleccionarNivel(estado.ultimaZonaTocada, nivel);
-            return;
-        }
-    }
-}
-
-// ======================================================
-// Utilidades
-// ======================================================
-function mostrarEstado(texto, tipo) {
-    statusBar.textContent = texto;
-    statusBar.className = "status-bar" + (tipo ? " " + tipo : "");
-}
-
-function escapeHtml(txt) {
-    return String(txt || "")
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-}
-function escapeAttr(txt) {
-    return String(txt || "").replace(/"/g, "&quot;");
-}
-function cssEscape(txt) {
-    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(txt);
-    return String(txt || "").replace(/([^\w-])/g, "\\$1");
-}
+async function escribirModoManual(zonasActivas) {
+    try {
+        const db = getFirestore(obtenerApp());
+        const ref = doc(db, COLECCION_SISTEMA, DOC_MODO);
+        await setDoc(ref, {
+            modo: "manual",
