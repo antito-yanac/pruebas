@@ -1,16 +1,15 @@
 // js/alertas.js
 //
 // ============================================================
-// Sistema de Alerta Meteorológica — v3.6
+// Sistema de Alerta Meteorológica — v3.7
 // ------------------------------------------------------------
-// v3.6 (2026-10): DEGRADACIÓN SOLO PARA ALERTAS MANUALES.
-//   - Las alertas con origen === "manual" degradan:
-//       roja     → naranja (+1min) → amarilla (+1min) → libre
-//       naranja  → amarilla (+1min) → libre
-//       amarilla → libre
-//   - Las alertas del scraper (origen !== "manual") NO degradan:
-//       el contador llega a 0 y pasan a "libre" directamente.
-//   - Fix: overlay "libre" no parpadea antes de la alerta real.
+// v3.7: modo manual vs automático (scraper).
+//   - Cuando `estado.modo === "manual"`, las alertas con
+//     origen === "manual" degradan (rojo→naranja→amarilla→libre).
+//   - Las alertas del scraper (origen null) NUNCA degradan.
+//   - Barrera de arranque: mostrarAlertaLibre() espera 1.5s a
+//     que los listeners terminen su primera lectura.
+//   - Nivel efectivo calculado en tiempo real.
 // ============================================================
 
 import { reproducirSonidoAlerta, detenerSonidoAlerta } from "./notifications.js";
@@ -111,15 +110,62 @@ const DURACION_TIMER_MINUTOS = 15;
 const MINUTOS_DEGRADACION = 1;
 
 // ----------------------------------------------------------
+// BARRERA DE ARRANQUE
+// ----------------------------------------------------------
+// Evita que mostrarAlertaLibre() pinte antes de que los listeners
+// (Firestore y estado.json) hayan terminado su primera lectura.
+// ----------------------------------------------------------
+const arranque = {
+    esperando: true,
+    listos: new Set(),
+    timeoutId: null,
+    TIMEOUT_MS: 1500
+};
+
+/**
+ * Marca una fuente como lista.
+ * @param {string} fuente - "firestore" o "estado-cliente"
+ */
+export function marcarArranqueListo(fuente) {
+    if (!arranque.esperando) return;
+    arranque.listos.add(fuente);
+    console.log(`[alertas] arranque: ${fuente} listo (${arranque.listos.size})`);
+
+    // Cuando ambas fuentes han terminado, liberar la barrera
+    if (arranque.listos.has("firestore") && arranque.listos.has("estado-cliente")) {
+        liberarArranque();
+    }
+}
+
+function liberarArranque() {
+    if (!arranque.esperando) return;
+    arranque.esperando = false;
+    if (arranque.timeoutId) {
+        clearTimeout(arranque.timeoutId);
+        arranque.timeoutId = null;
+    }
+    console.log("[alertas] arranque: barrera liberada");
+    // Si nadie mostró una alerta, mostrar libre
+    if (estado.zonasActivas.size === 0 && !libreYaCerradoPorUsuario) {
+        mostrarAlertaLibre(true);
+    }
+}
+
+// Iniciar timeout de seguridad (1.5s)
+arranque.timeoutId = setTimeout(() => {
+    if (arranque.esperando) {
+        console.warn("[alertas] arranque: timeout — liberando barrera sin esperar más");
+        liberarArranque();
+    }
+}, arranque.TIMEOUT_MS);
+
+// ----------------------------------------------------------
 // CÁLCULO DEL NIVEL EFECTIVO (DEGRADACIÓN SOLO MANUAL)
 // ----------------------------------------------------------
 export function calcularNivelEfectivo(nivelOriginal, timestampInicio, duracionMin, origen = null) {
     const elapsedMin = (Date.now() - timestampInicio) / 60000;
     const D = duracionMin || DURACION_TIMER_MINUTOS;
 
-    // ⚠️ SOLO las alertas manuales degradan.
-    // Los docs del scraper (origen !== "manual") solo cuentan
-    // hacia abajo hasta "libre" y NO degradan.
     if (origen !== "manual") {
         if (elapsedMin < D) {
             return {
@@ -130,7 +176,6 @@ export function calcularNivelEfectivo(nivelOriginal, timestampInicio, duracionMi
         return { nivel: "libre", restanteSeg: 0 };
     }
 
-    // ---- Solo alertas MANUALES de aquí en adelante ----
     if (nivelOriginal === "roja") {
         if (elapsedMin < D)                 return { nivel: "roja",    restanteSeg: Math.max(0, Math.ceil((D - elapsedMin) * 60)) };
         if (elapsedMin < D + MINUTOS_DEGRADACION)     return { nivel: "naranja", restanteSeg: Math.max(0, Math.ceil((D + MINUTOS_DEGRADACION - elapsedMin) * 60)) };
@@ -270,12 +315,7 @@ async function tickMaestro() {
     const aQuitar = [];
 
     for (const [distrito, zona] of estado.zonasActivas.entries()) {
-        const ef = calcularNivelEfectivo(
-            zona.nivelKey,
-            zona.timestampInicio,
-            zona.duracionMin,
-            zona.origen
-        );
+        const ef = calcularNivelEfectivo(zona.nivelKey, zona.timestampInicio, zona.duracionMin, zona.origen);
 
         if (ef.nivel === "libre") {
             aQuitar.push(distrito);
@@ -307,12 +347,7 @@ async function tickMaestro() {
     if (estado.bannerActual) {
         const zona = estado.zonasActivas.get(estado.bannerActual);
         if (zona) {
-            const ef = calcularNivelEfectivo(
-                zona.nivelKey,
-                zona.timestampInicio,
-                zona.duracionMin,
-                zona.origen
-            );
+            const ef = calcularNivelEfectivo(zona.nivelKey, zona.timestampInicio, zona.duracionMin, zona.origen);
             const el = document.getElementById("al-contador");
             if (el) {
                 el.textContent = formatearTiempo(ef.restanteSeg);
@@ -334,12 +369,7 @@ function formatearTiempo(segundos) {
 }
 
 function tiempoRestanteZona(zona) {
-    return calcularNivelEfectivo(
-        zona.nivelKey,
-        zona.timestampInicio,
-        zona.duracionMin,
-        zona.origen
-    ).restanteSeg;
+    return calcularNivelEfectivo(zona.nivelKey, zona.timestampInicio, zona.duracionMin, zona.origen).restanteSeg;
 }
 
 // ----------------------------------------------------------
@@ -418,7 +448,6 @@ export async function mostrarAlertaCompleta(datos = {}) {
 
         actualizarBarraYTarjetaAgregadas();
 
-        // Sonido SOLO si es nueva alerta (no en degradaciones)
         if (!yaExistia && nivelKey !== "vigilancia") {
             try { reproducirSonidoAlerta(30); } catch (e) {}
         }
@@ -753,15 +782,11 @@ export function mostrarBarraTarjetaLibre() {
 // ----------------------------------------------------------
 // MOSTRAR LIBRE
 // ----------------------------------------------------------
-export function mostrarAlertaLibre() {
+export function mostrarAlertaLibre(forzar = false) {
     try {
-        if (window.__estadoClienteIniciando) {
-            console.log("[alertas] posponiendo mostrarAlertaLibre (primera carga pendiente)");
-            setTimeout(() => {
-                if (window.__estadoClienteIniciando) return;
-                if (estado.zonasActivas.size > 0) return;
-                mostrarAlertaLibre();
-            }, 800);
+        // Si la barrera de arranque está esperando y no es forzado, posponer
+        if (!forzar && arranque.esperando) {
+            console.log("[alertas] mostrarAlertaLibre pospuesta por barrera de arranque");
             return;
         }
 
