@@ -1,12 +1,16 @@
 // js/estado-cliente.js
 // ============================================================
-// Puente estado.json ↔ sistema de alertas (v6)
-// v6: pasa `origen` a mostrarAlertaCompleta (viene null del
-//     scraper, por eso NO degrada).
-// v5: flag global para evitar parpadeo verde antes de alerta.
+// Puente estado.json ↔ sistema de alertas (v7)
+// v7:
+//   - Lee el flag modo desde `mensajes.js` (estadoModo).
+//   - En modo admin: NO reenvía alertas del scraper cuando el
+//     modo manual está activo.
+//   - En modo index: NO procesa estado.json cuando el modo manual
+//     está activo.
+//   - Marca arranque listo para la barrera de alertas.js.
 // ============================================================
 
-import { mostrarAlertaCompleta, mostrarAlertaLibre, quitarAlerta } from "./alertas.js";
+import { mostrarAlertaCompleta, mostrarAlertaLibre, quitarAlerta, marcarArranqueListo } from "./alertas.js";
 
 const ESTADO_URL    = "./estado.json";
 const INTERVALO_MS  = 30_000;
@@ -57,6 +61,19 @@ async function leerEstado() {
     return res.json();
 }
 
+// Chequea si el modo manual está activo consultando mensajes.js
+async function modoManualActivo() {
+    try {
+        const { estadoModo } = await import("./mensajes.js");
+        if (!estadoModo || !estadoModo.cargado) return false;
+        if (estadoModo.modo !== "manual") return false;
+        if (estadoModo.expiraEn && estadoModo.expiraEn < Date.now()) return false;
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 async function enviarAlertaFirestore(alerta) {
     const { enviarMensajePush } = await import("./mensajes.js");
     await enviarMensajePush(
@@ -73,7 +90,7 @@ async function enviarAlertaFirestore(alerta) {
             sectorOriginal: alerta.sectorOriginal,
             inicio: alerta.inicio,
             fin: alerta.fin
-            // Sin `origen` → será tratado como no-degradable por defecto.
+            // Sin `origen` → será tratado como no-manual.
         }
     );
 }
@@ -93,9 +110,19 @@ async function ciclo() {
         data = await leerEstado();
     } catch (e) {
         console.warn("estado-cliente: no se pudo leer estado.json:", e.message);
-        if (primeraCarga && cliente.modo === "index") {
-            window.__estadoClienteIniciando = false;
+        if (primeraCarga) {
             primeraCarga = false;
+            marcarArranqueListo("estado-cliente");
+        }
+        return;
+    }
+
+    // Si modo manual está activo, ignorar estado.json (scraper)
+    if (cliente.modo === "index" && await modoManualActivo()) {
+        console.log("[estado-cliente] modo manual activo → ignorando estado.json");
+        if (primeraCarga) {
+            primeraCarga = false;
+            marcarArranqueListo("estado-cliente");
         }
         return;
     }
@@ -104,6 +131,7 @@ async function ciclo() {
     const { historial, zonas } = cargarHistorial();
     const zonasVistas = new Set(zonas);
     const distritosActuales = new Set();
+    const modoManual = cliente.modo === "admin" && await modoManualActivo();
 
     for (const a of alertas) {
         if (a.nivel !== "amarilla" && a.nivel !== "naranja" && a.nivel !== "roja") continue;
@@ -127,6 +155,11 @@ async function ciclo() {
             zonasVistas.add(a.distrito);
 
             if (cliente.modo === "admin") {
+                // En modo manual, NO reenviar scraper a Firestore
+                if (modoManual) {
+                    console.log(`[estado-cliente/admin] modo manual activo → NO reenviar ${a.distrito}`);
+                    continue;
+                }
                 try {
                     await enviarAlertaFirestore(a);
                     try {
@@ -165,6 +198,7 @@ async function ciclo() {
     for (const distrito of distritosResueltos) {
         zonasVistas.delete(distrito);
         if (cliente.modo === "admin") {
+            if (modoManual) continue;
             try {
                 await enviarResolucionFirestore(distrito);
                 try {
@@ -178,19 +212,9 @@ async function ciclo() {
         }
     }
 
-    if (cliente.modo === "index" &&
-        distritosActuales.size === 0 &&
-        zonasVistas.size === 0 &&
-        !cliente.cargado) {
-        try { await mostrarAlertaLibre(); } catch {}
-        cliente.cargado = true;
-    }
-
     if (primeraCarga) {
         primeraCarga = false;
-        if (cliente.modo === "index") {
-            window.__estadoClienteIniciando = false;
-        }
+        marcarArranqueListo("estado-cliente");
     }
 
     guardarHistorial(historial, zonasVistas);
@@ -203,10 +227,6 @@ export function iniciarEstadoCliente(opciones = {}) {
     console.log(`estado-cliente: iniciado en modo "${cliente.modo}" (${INTERVALO_MS / 1000}s)`);
 
     primeraCarga = true;
-    if (cliente.modo === "index") {
-        window.__estadoClienteIniciando = true;
-    }
-
     ciclo();
     cliente.intervaloId = setInterval(ciclo, INTERVALO_MS);
 }
