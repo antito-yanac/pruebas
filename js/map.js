@@ -1,14 +1,15 @@
 // js/map.js
 // ============================================================
 //  Mapa Leaflet — Antamina
-//  v8: color base verde neón + glow pulsante en alertas.
+//  v9: verde suave para zonas en modo libre + filtro de ocultas
 // ------------------------------------------------------------
-//  - Las 4 zonas de zonas.json se pintan verde neón por
-//    defecto (sin alerta).
-//  - Cuando una zona tiene alerta, se repinta con el color
-//    del nivel y se le añade glow pulsante.
-//  - Al liberar, vuelve a verde neón.
-//  - lugares.json NO se toca (marcadores azules intactos).
+//  - ZONAS_OCULTAS: Zona 4 - Tajo (solo en modo manual).
+//  - pintarZonasBaseVerde() pinta SOLO Zona 1, 2, 3 con
+//    verde #22c55e (fillOpacity 0.20).
+//  - Alertas del scraper de Zona 4 SÍ se pintan (con color).
+//  - Alertas manuales de Zona 4 NUNCA se pintan (filtradas
+//    en alertas.js antes de llamar a map.js).
+//  - lugares.json NO se toca.
 // ============================================================
 
 let map;
@@ -24,12 +25,27 @@ let watchId          = null;
 let iconoTu          = null;
 
 // ======================================================
+// Zonas ocultas (solo afectan al modo manual desde admin.html)
+// ======================================================
+const ZONAS_OCULTAS = ["Zona 4 - Tajo"];
+
+function esZonaOculta(nombreZona) {
+    if (!nombreZona) return false;
+    const n = String(nombreZona).toLowerCase();
+    return ZONAS_OCULTAS.some(oc =>
+        oc.toLowerCase() === n ||
+        n.includes(oc.toLowerCase()) ||
+        oc.toLowerCase().includes(n)
+    );
+}
+
+// ======================================================
 // Paleta
 // ======================================================
-const VERDE_NEON = "#39ff14";
+const VERDE_BASE = "#22c55e";
 
 const COLORES_NIVEL = {
-    vigilancia: VERDE_NEON,
+    vigilancia: VERDE_BASE,
     amarilla:   "#f1c40f",
     naranja:    "#e67e22",
     roja:       "#e74c3c",
@@ -43,16 +59,10 @@ function colorDeNivel(nivelKey) {
 }
 
 // ======================================================
-// Estado de los polígonos de zona
+// Estado de los polígonos
 // ======================================================
-// Map<nombreZona, { poligono, color, nivel, glowStyle, intervalPulso }>
 const poligonosActivos = new Map();
 let zonasData = null;
-
-// Cache de las 4 zonas de zonas.json (una vez cargadas)
-let zonasCache = null;
-
-// Referencia al <style> que inyectamos para el glow pulsante
 let _estiloGlowInyectado = false;
 
 // ======================================================
@@ -70,7 +80,6 @@ async function cargarZonas() {
     }
 }
 
-// Inyecta el <style> global con los keyframes del glow pulsante
 function inyectarEstiloGlow() {
     if (_estiloGlowInyectado) return;
     _estiloGlowInyectado = true;
@@ -85,9 +94,7 @@ function inyectarEstiloGlow() {
         }
         .al-zona-glow {
             animation: al-zona-glow-pulso 1.6s ease-in-out infinite;
-            color: currentColor;
         }
-        /* Verde neón sin glow */
         .al-zona-sin-glow {
             filter: none;
         }
@@ -95,23 +102,19 @@ function inyectarEstiloGlow() {
     document.head.appendChild(style);
 }
 
-// Aplica el efecto glow pulsante al path del polígono
 function aplicarGlowPulsante(poligono, nivelKey) {
     try {
         const el = poligono.getElement();
         if (!el) return;
-
         const color = colorDeNivel(nivelKey);
         el.classList.remove("al-zona-sin-glow");
         el.classList.add("al-zona-glow");
-        // currentColor lo lee el filter drop-shadow
         el.style.color = color;
     } catch (e) {
         console.warn("map.js: error aplicando glow:", e);
     }
 }
 
-// Quita el glow del path
 function quitarGlow(poligono) {
     try {
         const el = poligono.getElement();
@@ -123,7 +126,7 @@ function quitarGlow(poligono) {
 }
 
 // ======================================================
-// ILUMINAR DISTRITO (rayo + punto sobre coordenada)
+// ILUMINAR DISTRITO (rayo + punto)
 // ======================================================
 export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     if (!map) return null;
@@ -184,7 +187,7 @@ export function iluminarDistrito(lat, lng, nivelKey = "roja") {
 }
 
 // ======================================================
-// ILUMINAR ZONA DESDE GEOJSON (punto real de la zona)
+// ILUMINAR ZONA DESDE GEOJSON
 // ======================================================
 export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     if (!map) return null;
@@ -444,7 +447,7 @@ function mostrarMiUbicacion() {
 }
 
 // ======================================================
-// CARGAR GEOJSON (lugares.json — NO se toca el color)
+// CARGAR GEOJSON (lugares.json)
 // ======================================================
 function cargarGeoJSON(lugares) {
     if (geoLayer) {
@@ -538,22 +541,21 @@ function irA(lugar) {
 // ======================================================
 // PINTAR POLÍGONO DE ZONA
 // ------------------------------------------------------------
-// - Sin alerta (nivel = "verde" o null): VERDE_NEON, sin glow.
-// - Con alerta: color del nivel + glow pulsante.
+// - nivelKey === "vigilancia" → verde suave #22c55e
+// - nivelKey !== "vigilancia" → color del nivel + glow
+// - Si nivelKey es null, se deduce del color
 // ======================================================
-export async function pintarPoligonoZona(nombreZona, color = VERDE_NEON, nivelKey = null) {
+export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKey = null) {
     if (!map) return null;
 
-    // Si no viene nivelKey, deducirlo del color
     if (!nivelKey) {
-        if (color === VERDE_NEON || color === "#2ECC71" || color === "#2ecc71") nivelKey = "vigilancia";
+        if (color === VERDE_BASE || color === "#2ECC71" || color === "#2ecc71") nivelKey = "vigilancia";
         else if (color === "#FFD400" || color === "#f1c40f") nivelKey = "amarilla";
         else if (color === "#FF8C00" || color === "#e67e22") nivelKey = "naranja";
         else if (color === "#FA5858" || color === "#e74c3c") nivelKey = "roja";
         else nivelKey = "vigilancia";
     }
 
-    // Quitar si ya existía para repintar con nuevos valores
     quitarPoligonoZona(nombreZona);
 
     const data = await cargarZonas();
@@ -574,8 +576,8 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_NEON, nivelKe
     const latlngs = zona.poligono.map(coord => [coord[1], coord[0]]);
 
     const tieneAlerta = nivelKey !== "vigilancia";
-    const colorFinal = tieneAlerta ? colorDeNivel(nivelKey) : VERDE_NEON;
-    const fillOp = tieneAlerta ? 0.5 : 0.35;
+    const colorFinal = tieneAlerta ? colorDeNivel(nivelKey) : VERDE_BASE;
+    const fillOp = tieneAlerta ? 0.5 : 0.20;
 
     const poligono = L.polygon(latlngs, {
         color: colorFinal,
@@ -591,7 +593,6 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_NEON, nivelKe
         (tieneAlerta ? `Zona bajo alerta meteorológica` : `Zona sin alerta`)
     );
 
-    // Aplicar glow después de que el path esté en el DOM
     if (tieneAlerta) {
         setTimeout(() => aplicarGlowPulsante(poligono, nivelKey), 50);
     } else {
@@ -649,11 +650,17 @@ export function obtenerPoligonosActivos() {
 }
 
 // ======================================================
-// PINTAR LAS 4 ZONAS DE ZONAS.JSON EN VERDE NEÓN
+// ¿La zona está en la lista de ocultas?
+// ======================================================
+export function esZonaOcultaExport(nombreZona) {
+    return esZonaOculta(nombreZona);
+}
+
+// ======================================================
+// PINTAR ZONAS BASE VERDE
 // ------------------------------------------------------------
-// Al arrancar el mapa, pinta las 4 zonas con el verde neón
-// (sin alerta). Cuando llegue una alerta, alertas.js llamará
-// a pintarPoligonoZona() con el color del nivel correspondiente.
+// Pinta SOLO las 3 zonas visibles (1, 2, 3) con verde #22c55e.
+// Zona 4 (Tajo) NUNCA se pinta como base.
 // ======================================================
 export async function pintarZonasBaseVerde() {
     if (!map) return;
@@ -664,12 +671,15 @@ export async function pintarZonasBaseVerde() {
         return;
     }
 
+    let pintadas = 0;
     for (const zona of data.zonas) {
+        if (esZonaOculta(zona.nombre)) continue;
         try {
-            await pintarPoligonoZona(zona.nombre, VERDE_NEON, "vigilancia");
+            await pintarPoligonoZona(zona.nombre, VERDE_BASE, "vigilancia");
+            pintadas++;
         } catch (e) {
             console.warn("map.js: error pintando zona base:", zona.nombre, e);
         }
     }
-    console.log(`[map] ${data.zonas.length} zonas pintadas en verde neón`);
+    console.log(`[map] ${pintadas} zonas pintadas en verde #22c55e (ocultas: ${ZONAS_OCULTAS.join(", ")})`);
 }
