@@ -341,7 +341,7 @@
    ============================================================ */
 #al-barra-superior {
     position: fixed;
-    top: 14px;
+       top: 14px;
     right: 16px;
     left: auto !important;
     margin: 0 !important;
@@ -362,10 +362,11 @@
     font-size: 11px;
     font-weight: 600;
 
+    /* Mismo matiz que #al-tarjeta: fondo oscuro → colorDark */
     background: linear-gradient(
-        135deg,
-        var(--al-color-dark, #c0392b),
-        var(--al-color, #e74c3c)
+        160deg,
+        rgba(20, 20, 25, 0.96),
+        var(--al-color-dark, #c0392b)
     );
 
     border: 1px solid var(--al-color, #e74c3c);
