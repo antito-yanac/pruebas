@@ -1,30 +1,46 @@
 // js/alertas.js
 //
 // ============================================================
-// Sistema de Alerta Meteorológica — v3.8
+// Sistema de Alerta Meteorológica — v3.9
 // ------------------------------------------------------------
-// v3.8: zonas verdes neón por defecto + glow pulsante en alertas.
-//   - Al arrancar, se pintan las 4 zonas de zonas.json en verde
-//     neón #39ff14 (sin glow).
-//   - Al activarse una alerta en una zona, esa zona se repinta
-//     con el color del nivel (amarillo/naranja/rojo) + glow.
-//   - Al liberar, la zona vuelve a verde neón.
-//   - lugares.json NO se toca.
-//   - Degradación solo manual (origen === "manual").
-//   - Barrera de arranque (1.5s) para no parpadear verde.
+// v3.9: filtro Zona 4 para alertas manuales.
+//   - ZONAS_OCULTAS_MANUAL = ["Zona 4 - Tajo"]
+//   - Si una alerta llega con origen === "manual" Y su distrito
+//     está en ZONAS_OCULTAS_MANUAL → se descarta por completo
+//     (no se añade a zonasActivas, no hay banner, no hay tarjeta,
+//     no se pinta polígono).
+//   - Las alertas del scraper (origen !== "manual") SÍ se procesan
+//     aunque sean de Zona 4.
+//   - Degradación solo para manuales.
+//   - Verde base #22c55e para zonas sin alerta.
 // ============================================================
 
 import { reproducirSonidoAlerta, detenerSonidoAlerta } from "./notifications.js";
 
-const VERDE_NEON = "#39ff14";
+const VERDE_BASE = "#22c55e";
+
+// ----------------------------------------------------------
+// Zonas ignoradas SOLO en modo manual
+// ----------------------------------------------------------
+const ZONAS_OCULTAS_MANUAL = ["Zona 4 - Tajo"];
+
+function esZonaOcultaManual(nombreZona) {
+    if (!nombreZona) return false;
+    const n = String(nombreZona).toLowerCase();
+    return ZONAS_OCULTAS_MANUAL.some(oc =>
+        oc.toLowerCase() === n ||
+        n.includes(oc.toLowerCase()) ||
+        oc.toLowerCase().includes(n)
+    );
+}
 
 // ----------------------------------------------------------
 // Niveles
 // ----------------------------------------------------------
 export const NIVELES_ALERTA = {
     vigilancia: {
-        nombre: "Vigilancia", color: VERDE_NEON, colorDark: "#27ae60",
-        glow: "rgba(46,204,113,0.6)", icono: "🟢", iconoBig: "🌩️",
+        nombre: "Vigilancia", color: VERDE_BASE, colorDark: "#15803d",
+        glow: "rgba(34,197,94,0.6)", icono: "🟢", iconoBig: "🌩️",
         descripcion: "Actividad eléctrica lejana.",
         recomendacion: "Manténgase informado sobre el desarrollo del clima.",
         orden: 0
@@ -311,7 +327,6 @@ async function tickMaestro() {
         if (ef.nivel !== zona.nivelActual) {
             zona.nivelActual = ef.nivel;
 
-            // Repintar polígono con nuevo color + glow
             const mod = await obtenerModuloMapa();
             if (mod && typeof mod.pintarPoligonoZona === "function") {
                 const nivel = NIVELES_ALERTA[ef.nivel];
@@ -368,7 +383,7 @@ function tiempoRestanteZona(zona) {
 }
 
 // ----------------------------------------------------------
-// PINTAR ZONAS BASE VERDE (llamada al arrancar)
+// PINTAR ZONAS BASE VERDE
 // ----------------------------------------------------------
 export async function pintarZonasBaseSiProcede() {
     try {
@@ -386,61 +401,68 @@ export async function pintarZonasBaseSiProcede() {
 // ----------------------------------------------------------
 export async function mostrarAlertaCompleta(datos = {}) {
     try {
+        const origen = datos.origen || null;
+        const distrito = datos.distrito || "";
+
+        // FILTRO: Zona 4 solo se ignora si viene de modo manual
+        if (origen === "manual" && esZonaOcultaManual(distrito)) {
+            console.log(`[alertas] Zona oculta en modo manual — se descarta: ${distrito}`);
+            return;
+        }
+
         libreYaCerradoPorUsuario = false;
         asegurarEstructuraDOM();
 
         const nivelKey = NIVELES_ALERTA[datos.nivel] ? datos.nivel : "roja";
-        const distrito = datos.distrito || `Zona ${estado.zonasActivas.size + 1}`;
+        const distritoFinal = distrito || `Zona ${estado.zonasActivas.size + 1}`;
         const duracionMin = (datos.duracionMin && datos.duracionMin > 0) ? datos.duracionMin : DURACION_TIMER_MINUTOS;
         const tsInicio = (typeof datos.timestampInicio === "number" && datos.timestampInicio > 0) ? datos.timestampInicio : Date.now();
 
-        const yaExistia = estado.zonasActivas.has(distrito);
+        const yaExistia = estado.zonasActivas.has(distritoFinal);
 
-        estado.zonasActivas.set(distrito, {
+        estado.zonasActivas.set(distritoFinal, {
             nivel: nivelKey,
             nivelKey,
             nivelActual: nivelKey,
-            distrito,
+            distrito: distritoFinal,
             lat: datos.lat ?? null,
             lng: datos.lng ?? null,
             duracionMin,
             timestampInicio: tsInicio,
-            origen: datos.origen || null,
+            origen,
             sectorOriginal: datos.sectorOriginal || null,
             inicio: datos.inicio || null,
             fin: datos.fin || null,
-            titulo: datos.titulo || `⚡ ALERTA ${nivelKey.toUpperCase()} — ${distrito}`,
-            mensaje: datos.mensaje || `Actividad eléctrica detectada en ${distrito}.`
+            titulo: datos.titulo || `⚡ ALERTA ${nivelKey.toUpperCase()} — ${distritoFinal}`,
+            mensaje: datos.mensaje || `Actividad eléctrica detectada en ${distritoFinal}.`
         });
 
         iniciarIntervalMaestro();
 
-        // Repintar polígono de esa zona con color del nivel + glow
-        if (datos.distrito) {
+        if (distritoFinal) {
             const mod = await obtenerModuloMapa();
             if (mod && typeof mod.pintarPoligonoZona === "function") {
                 const nivel = NIVELES_ALERTA[nivelKey];
                 try {
-                    await mod.pintarPoligonoZona(datos.distrito, nivel.color, nivelKey);
+                    await mod.pintarPoligonoZona(distritoFinal, nivel.color, nivelKey);
                 } catch (e) {}
             }
         }
 
-        // Rayo + círculo (solo si es la primera vez que se activa esa zona)
         if (!yaExistia && datos.lat != null && datos.lng != null) {
             const mod = await obtenerModuloMapa();
             if (mod && typeof mod.iluminarDistrito === "function") {
-                if (capasRayos.has(distrito)) {
-                    try { capasRayos.get(distrito).detener(); } catch (e) {}
-                    capasRayos.delete(distrito);
+                if (capasRayos.has(distritoFinal)) {
+                    try { capasRayos.get(distritoFinal).detener(); } catch (e) {}
+                    capasRayos.delete(distritoFinal);
                 }
                 const capa = await mod.iluminarDistrito(datos.lat, datos.lng, nivelKey);
-                if (capa) capasRayos.set(distrito, capa);
+                if (capa) capasRayos.set(distritoFinal, capa);
             }
         }
 
         if (!yaExistia) {
-            estado.colaBanners.push(distrito);
+            estado.colaBanners.push(distritoFinal);
             estado.colaBanners.sort((a, b) => {
                 const za = estado.zonasActivas.get(a);
                 const zb = estado.zonasActivas.get(b);
@@ -451,10 +473,10 @@ export async function mostrarAlertaCompleta(datos = {}) {
 
         if (estado.bannerActual === null) {
             mostrarSiguienteBanner();
-        } else if (estado.bannerActual === distrito) {
+        } else if (estado.bannerActual === distritoFinal) {
             const overlay = document.getElementById("al-overlay");
             const estabaVisible = overlay?.classList.contains("al-visible");
-            pintarBannerDeZona(estado.zonasActivas.get(distrito), { noReabrir: !estabaVisible });
+            pintarBannerDeZona(estado.zonasActivas.get(distritoFinal), { noReabrir: !estabaVisible });
         } else {
             actualizarIndicadorCola();
         }
@@ -486,15 +508,25 @@ export async function quitarAlerta(distrito) {
         }
         if (!distritoReal) return false;
 
-        // Repintar la zona en VERDE NEÓN (sin alerta) — SIN quitarla del mapa
-        const mod = await obtenerModuloMapa();
-        if (mod && typeof mod.pintarPoligonoZona === "function") {
-            try {
-                await mod.pintarPoligonoZona(distritoReal, VERDE_NEON, "vigilancia");
-            } catch (e) {}
+        const origen = estado.zonasActivas.get(distritoReal)?.origen || null;
+
+        // Repintar la zona en VERDE base... PERO solo si NO es oculta en manual
+        const esOculta = origen === "manual" && esZonaOcultaManual(distritoReal);
+        if (!esOculta) {
+            const mod = await obtenerModuloMapa();
+            if (mod && typeof mod.pintarPoligonoZona === "function") {
+                try {
+                    await mod.pintarPoligonoZona(distritoReal, VERDE_BASE, "vigilancia");
+                } catch (e) {}
+            }
+        } else {
+            // Es oculta en manual: quitarla del mapa completamente
+            const mod = await obtenerModuloMapa();
+            if (mod && typeof mod.quitarPoligonoZona === "function") {
+                try { mod.quitarPoligonoZona(distritoReal); } catch (e) {}
+            }
         }
 
-        // Quitar rayo/círculo
         if (capasRayos.has(distritoReal)) {
             try { capasRayos.get(distritoReal).detener(); } catch (e) {}
             capasRayos.delete(distritoReal);
@@ -822,7 +854,6 @@ export function mostrarAlertaLibre(forzar = false) {
         }
         capasRayos.clear();
 
-        // Repintar todas las zonas base en verde neón
         obtenerModuloMapa().then(mod => {
             if (!mod) return;
             if (typeof mod.pintarZonasBaseVerde === "function") {
