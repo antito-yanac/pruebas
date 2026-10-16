@@ -1,13 +1,13 @@
 // js/alertas.js
 //
 // ============================================================
-// Sistema de Alerta Meteorológica — v4.0
+// Sistema de Alerta Meteorológica — v4.1
 // ------------------------------------------------------------
-// v4.0 (2026-10): FIX color del panel/barra/tarjeta en Chrome.
-//   El navegador cacheaba el linear-gradient cuando las variables
-//   CSS cambiaban dinámicamente (bug conocido). Ahora se fuerza
-//   reflow con `void el.offsetHeight` y se re-aplica el setProperty
-//   en el siguiente microtask.
+// v4.1 (2026-10): FIX DEFINITIVO del cacheo de Chrome.
+//   El background de .al-panel, #al-barra-superior y #al-tarjeta
+//   se aplica DIRECTAMENTE por JS (el.style.background = "...").
+//   Ya no se usa var(--al-color-dark) dentro del linear-gradient,
+//   porque Chrome cacheaba el valor al cambiar de amarillo.
 // ============================================================
 
 import { reproducirSonidoAlerta, detenerSonidoAlerta } from "./notifications.js";
@@ -122,25 +122,47 @@ const DURACION_TIMER_MINUTOS = 15;
 const MINUTOS_DEGRADACION = 1;
 
 // ----------------------------------------------------------
-// APLICAR VARIABLES CSS (con fix de Chrome)
+// APLICAR COLORES — v4.1
 // ----------------------------------------------------------
-// Chrome no repinta los `linear-gradient` cuando las variables
-// CSS cambian dinámicamente justo después de salir de otra clase
-// (como `.al-libre`). Forzamos reflow y re-aplicamos en microtask.
+// El background se aplica DIRECTAMENTE al elemento con el string
+// completo del gradiente. NO se usa var(--al-color-dark) dentro
+// del background porque Chrome lo cachea.
 // ----------------------------------------------------------
+function pintarBackground(elemento, nivel, esLibre = false) {
+    if (!elemento) return;
+    if (esLibre) return; // el modo libre tiene su propio CSS
+
+    // Panel del overlay: gradiente entre color claro y color oscuro
+    if (elemento.classList.contains("al-panel")) {
+        elemento.style.background = `linear-gradient(160deg, ${nivel.color}, ${nivel.colorDark})`;
+        elemento.style.borderColor = nivel.color;
+        return;
+    }
+
+    // Barra superior y tarjeta flotante: gradiente oscuro → colorDark
+    elemento.style.background = `linear-gradient(160deg, rgba(20, 20, 25, 0.96), ${nivel.colorDark})`;
+    elemento.style.borderColor = nivel.color;
+    // Border left para la tarjeta
+    if (elemento.id === "al-tarjeta") {
+        elemento.style.borderLeft = `4px solid ${nivel.color}`;
+    }
+}
+
+// Resetear el inline style para volver al CSS normal (por ejemplo, al
+// volver a "libre" que tiene su propio fondo verde).
+function resetBackground(elemento) {
+    if (!elemento) return;
+    elemento.style.background = "";
+    elemento.style.borderColor = "";
+    if (elemento.id === "al-tarjeta") {
+        elemento.style.borderLeft = "";
+    }
+}
+
+// Aplicar variables CSS (para badges, botones, etc. que SÍ funcionan con var)
 function aplicarVarsCSS(el, vars) {
     if (!el) return;
     vars.forEach(([k, v]) => el.style.setProperty(k, v));
-    void el.offsetHeight;   // forzar reflow
-}
-
-function aplicarVarsCSSEnMicrotask(elements, vars) {
-    setTimeout(() => {
-        elements.forEach(el => {
-            if (!el) return;
-            vars.forEach(([k, v]) => el.style.setProperty(k, v));
-        });
-    }, 0);
 }
 
 // ----------------------------------------------------------
@@ -178,7 +200,7 @@ arranque.timeoutId = setTimeout(() => {
 }, arranque.TIMEOUT_MS);
 
 // ----------------------------------------------------------
-// NIVEL EFECTIVO (degradación solo manual)
+// NIVEL EFECTIVO
 // ----------------------------------------------------------
 export function calcularNivelEfectivo(nivelOriginal, timestampInicio, duracionMin, origen = null) {
     const elapsedMin = (Date.now() - timestampInicio) / 60000;
@@ -186,10 +208,7 @@ export function calcularNivelEfectivo(nivelOriginal, timestampInicio, duracionMi
 
     if (origen !== "manual") {
         if (elapsedMin < D) {
-            return {
-                nivel: nivelOriginal,
-                restanteSeg: Math.max(0, Math.ceil((D - elapsedMin) * 60))
-            };
+            return { nivel: nivelOriginal, restanteSeg: Math.max(0, Math.ceil((D - elapsedMin) * 60)) };
         }
         return { nivel: "libre", restanteSeg: 0 };
     }
@@ -395,9 +414,6 @@ function tiempoRestanteZona(zona) {
     return calcularNivelEfectivo(zona.nivelKey, zona.timestampInicio, zona.duracionMin, zona.origen).restanteSeg;
 }
 
-// ----------------------------------------------------------
-// PINTAR ZONAS BASE VERDE
-// ----------------------------------------------------------
 export async function pintarZonasBaseSiProcede() {
     try {
         const mod = await import("./map.js");
@@ -520,8 +536,8 @@ export async function quitarAlerta(distrito) {
         if (!distritoReal) return false;
 
         const origen = estado.zonasActivas.get(distritoReal)?.origen || null;
-
         const esOculta = origen === "manual" && esZonaOcultaManual(distritoReal);
+
         if (!esOculta) {
             const mod = await obtenerModuloMapa();
             if (mod && typeof mod.pintarPoligonoZona === "function") {
@@ -597,7 +613,7 @@ function actualizarIndicadorCola() {
 }
 
 // ----------------------------------------------------------
-// PINTAR BANNER DE ZONA — CON FIX DE COLOR
+// PINTAR BANNER — CON BACKGROUND DIRECTO
 // ----------------------------------------------------------
 function pintarBannerDeZona(zona, opts = {}) {
     const nivelKeyActual = zona.nivelActual || zona.nivelKey;
@@ -608,22 +624,24 @@ function pintarBannerDeZona(zona, opts = {}) {
     const panelEl = document.getElementById("al-panel");
     const modalEl = document.getElementById("al-modal-seguridad");
 
+    // Quitar al-libre PRIMERO para que el panel no use el fondo verde
+    overlayEl.classList.remove("al-libre");
+
+    // Aplicar BACKGROUND directamente por JS (bypass del cacheo de Chrome)
+    pintarBackground(panelEl, nivel, false);
+    if (modalEl) {
+        modalEl.style.setProperty("--al-color", nivel.color);
+    }
+
+    // Aplicar variables CSS para el resto de usos (badges, iconos, botones)
     const vars = [
         ["--al-color", nivel.color],
         ["--al-color-dark", nivel.colorDark],
         ["--al-glow", nivel.glow]
     ];
-
-    // Aplicar variables con reflow forzado
     aplicarVarsCSS(overlayEl, vars);
     aplicarVarsCSS(panelEl, vars);
     aplicarVarsCSS(modalEl, vars);
-
-    // Quitar al-libre ANTES de re-aplicar en microtask
-    overlayEl.classList.remove("al-libre");
-
-    // Re-aplicar en el siguiente microtask (fix Chrome)
-    aplicarVarsCSSEnMicrotask([overlayEl, panelEl, modalEl], vars);
 
     document.getElementById("al-icono-big").textContent = nivel.iconoBig;
     document.getElementById("al-nivel-badge").textContent = nivel.nombre;
@@ -679,16 +697,17 @@ function abrirOverlayLibre() {
         const panelEl = document.getElementById("al-panel");
         const modalEl = document.getElementById("al-modal-seguridad");
 
+        // Resetear background inline para que el CSS de .al-libre tome el control
+        resetBackground(panelEl);
+
         const vars = [
             ["--al-color", nivel.color],
             ["--al-color-dark", nivel.colorDark],
             ["--al-glow", nivel.glow]
         ];
-
         aplicarVarsCSS(overlayEl, vars);
         aplicarVarsCSS(panelEl, vars);
         aplicarVarsCSS(modalEl, vars);
-        aplicarVarsCSSEnMicrotask([overlayEl, panelEl, modalEl], vars);
 
         document.getElementById("al-icono-big").textContent = "✅";
         document.getElementById("al-nivel-badge").textContent = "VIGILANCIA";
@@ -713,7 +732,7 @@ function abrirOverlayLibre() {
 }
 
 // ----------------------------------------------------------
-// BARRA + TARJETA AGREGADAS — CON FIX DE COLOR
+// BARRA + TARJETA AGREGADAS — CON BACKGROUND DIRECTO
 // ----------------------------------------------------------
 function actualizarBarraYTarjetaAgregadas() {
     const barra = document.getElementById("al-barra-superior");
@@ -730,19 +749,21 @@ function actualizarBarraYTarjetaAgregadas() {
         if (n.orden > nivelMax.orden) nivelMax = n;
     }
 
+    barra.classList.remove("al-modo-libre");
+    tarjeta.classList.remove("al-modo-libre");
+
+    // Aplicar BACKGROUND directamente por JS
+    pintarBackground(barra, nivelMax, false);
+    pintarBackground(tarjeta, nivelMax, false);
+
+    // Aplicar variables CSS
     const vars = [
         ["--al-color", nivelMax.color],
         ["--al-color-dark", nivelMax.colorDark],
         ["--al-glow", nivelMax.glow]
     ];
-
     aplicarVarsCSS(barra, vars);
     aplicarVarsCSS(tarjeta, vars);
-
-    barra.classList.remove("al-modo-libre");
-    tarjeta.classList.remove("al-modo-libre");
-
-    aplicarVarsCSSEnMicrotask([barra, tarjeta], vars);
 
     document.getElementById("al-barra-icono").textContent = nivelMax.iconoBig;
 
@@ -827,9 +848,12 @@ export function mostrarBarraTarjetaLibre() {
         const barra = document.getElementById("al-barra-superior");
         const tarjeta = document.getElementById("al-tarjeta");
 
+        // Resetear background inline → el CSS de .al-modo-libre toma el control
+        resetBackground(barra);
+        resetBackground(tarjeta);
+
         aplicarVarsCSS(barra, vars);
         aplicarVarsCSS(tarjeta, vars);
-        aplicarVarsCSSEnMicrotask([barra, tarjeta], vars);
 
         barra?.classList.add("al-modo-libre");
         tarjeta?.classList.add("al-modo-libre");
