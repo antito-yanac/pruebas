@@ -12,7 +12,7 @@
 // ============================================================
 
 import { inicializarFirebase, mostrarToast } from "./notifications.js";
-import { enviarMensajePush, escucharMensajesPush, estadoModo } from "./mensajes.js";
+import { enviarMensajePush, escucharMensajesPush } from "./mensajes.js";
 import { iniciarSesion, cerrarSesion, observarSesion, traducirErrorAuth } from "./auth.js";
 import { NIVELES_ALERTA, calcularNivelEfectivo } from "./alertas.js";
 import { iniciarEstadoCliente } from "./estado-cliente.js";
@@ -802,7 +802,6 @@ async function liberarTodas(zonas) {
         }
     }
 
-    // Volver a modo automático
     if (ok > 0) {
         await escribirModoAutomatico();
     }
@@ -823,3 +822,132 @@ async function escribirModoManual(zonasActivas) {
         const ref = doc(db, COLECCION_SISTEMA, DOC_MODO);
         await setDoc(ref, {
             modo: "manual",
+            zonasActivas: zonasActivas || [],
+            actualizado: serverTimestamp(),
+            expiraEn: new Date(Date.now() + TIMEOUT_MODO_MS)
+        }, { merge: true });
+        console.log("[admin] modo manual activado:", zonasActivas);
+    } catch (e) {
+        console.error("[admin] error escribiendo modo manual:", e);
+    }
+}
+
+async function escribirModoAutomatico() {
+    try {
+        const db = getFirestore(obtenerApp());
+        const ref = doc(db, COLECCION_SISTEMA, DOC_MODO);
+        await setDoc(ref, {
+            modo: "automatico",
+            zonasActivas: [],
+            actualizado: serverTimestamp(),
+            expiraEn: null
+        }, { merge: true });
+        console.log("[admin] modo automatico activado");
+    } catch (e) {
+        console.error("[admin] error escribiendo modo automatico:", e);
+    }
+}
+
+async function recalcularModo() {
+    const zonasManualesActivas = [];
+    for (const [distrito, info] of estado.alertasActivas.entries()) {
+        if (info.origen === "manual") {
+            const ef = calcularNivelEfectivo(info.nivel, info.timestampInicio, info.duracionMin, info.origen);
+            if (ef.nivel !== "libre") zonasManualesActivas.push(distrito);
+        }
+    }
+
+    if (zonasManualesActivas.length === 0) {
+        await escribirModoAutomatico();
+    } else {
+        await escribirModoManual(zonasManualesActivas);
+    }
+}
+
+// ======================================================
+// Badge del modo (si existe en admin.html)
+// ======================================================
+let _ultimoModoMostrado = null;
+function actualizarBadgeModo() {
+    const el = document.getElementById("pa-badge-modo");
+    if (!el) return;
+
+    // Leer el estado del módulo mensajes.js
+    import("./mensajes.js").then(mod => {
+        const em = mod.estadoModo;
+        if (!em) return;
+        const texto = em.modo === "manual" ? "🖐️ MODO MANUAL" : "🤖 MODO AUTOMÁTICO";
+        if (texto === _ultimoModoMostrado) return;
+        _ultimoModoMostrado = texto;
+        el.textContent = texto;
+        el.style.background = em.modo === "manual" ? "#e67e22" : "#2ecc71";
+    }).catch(() => {});
+}
+
+// ======================================================
+// Atajos de teclado
+// ======================================================
+function onKeyDown(e) {
+    const t = e.target;
+    const esInput = t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+
+    if (e.ctrlKey && e.key === "Enter") {
+        e.preventDefault();
+        if (!paBtnEnviar.disabled) paBtnEnviar.click();
+        return;
+    }
+
+    if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "l")) {
+        e.preventDefault();
+        if (estado.alertasActivas.size > 0) onClickLiberarTodas();
+        return;
+    }
+
+    if (esInput) return;
+    if (modalConfirm.classList.contains("modal-visible")) return;
+
+    if (["1", "2", "3", "4"].includes(e.key)) {
+        e.preventDefault();
+        const zona = ZONAS.find(z => z.short === e.key);
+        if (zona && !zona.oculta) toggleZona(zona.distrito);
+        return;
+    }
+
+    if (e.shiftKey && !e.ctrlKey && !e.altKey) {
+        const k = e.key.toUpperCase();
+        if (k === "A" || k === "N" || k === "R") {
+            if (!estado.ultimaZonaTocada) {
+                mostrarToast("⚠️ Sin zona", "Primero selecciona una zona con 1, 2 o 3.", "alerta", false);
+                return;
+            }
+            const zona = ZONAS.find(z => z.distrito === estado.ultimaZonaTocada);
+            if (zona && zona.oculta) return;
+
+            const nivel = k === "A" ? "amarilla" : k === "N" ? "naranja" : "roja";
+            e.preventDefault();
+            seleccionarNivel(estado.ultimaZonaTocada, nivel);
+            return;
+        }
+    }
+}
+
+// ======================================================
+// Utilidades
+// ======================================================
+function mostrarEstado(texto, tipo) {
+    statusBar.textContent = texto;
+    statusBar.className = "status-bar" + (tipo ? " " + tipo : "");
+}
+
+function escapeHtml(txt) {
+    return String(txt || "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+function escapeAttr(txt) {
+    return String(txt || "").replace(/"/g, "&quot;");
+}
+function cssEscape(txt) {
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(txt);
+    return String(txt || "").replace(/([^\w-])/g, "\\$1");
+}
