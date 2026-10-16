@@ -1,8 +1,14 @@
 // js/map.js
 // ============================================================
 //  Mapa Leaflet — Antamina
-//  v7: fitBounds en pintarPoligonoZona (encuadra la zona completa)
-//      + listener robusto de ubicación (click + touchend)
+//  v8: color base verde neón + glow pulsante en alertas.
+// ------------------------------------------------------------
+//  - Las 4 zonas de zonas.json se pintan verde neón por
+//    defecto (sin alerta).
+//  - Cuando una zona tiene alerta, se repinta con el color
+//    del nivel y se le añade glow pulsante.
+//  - Al liberar, vuelve a verde neón.
+//  - lugares.json NO se toca (marcadores azules intactos).
 // ============================================================
 
 let map;
@@ -18,10 +24,12 @@ let watchId          = null;
 let iconoTu          = null;
 
 // ======================================================
-// Paleta unificada
+// Paleta
 // ======================================================
+const VERDE_NEON = "#39ff14";
+
 const COLORES_NIVEL = {
-    vigilancia: "#2ecc71",
+    vigilancia: VERDE_NEON,
     amarilla:   "#f1c40f",
     naranja:    "#e67e22",
     roja:       "#e74c3c",
@@ -34,12 +42,88 @@ function colorDeNivel(nivelKey) {
     return COLORES_NIVEL[nivelKey] || COLORES_NIVEL.roja;
 }
 
+// ======================================================
+// Estado de los polígonos de zona
+// ======================================================
+// Map<nombreZona, { poligono, color, nivel, glowStyle, intervalPulso }>
 const poligonosActivos = new Map();
 let zonasData = null;
 
+// Cache de las 4 zonas de zonas.json (una vez cargadas)
+let zonasCache = null;
+
+// Referencia al <style> que inyectamos para el glow pulsante
+let _estiloGlowInyectado = false;
 
 // ======================================================
-// ILUMINAR DISTRITO (rayo + círculo + pulso sobre un punto)
+// Utilidades
+// ======================================================
+async function cargarZonas() {
+    if (zonasData) return zonasData;
+    try {
+        const resp = await fetch("./zonas.json");
+        zonasData = await resp.json();
+        return zonasData;
+    } catch (e) {
+        console.warn("map.js: no se pudo cargar zonas.json", e);
+        return null;
+    }
+}
+
+// Inyecta el <style> global con los keyframes del glow pulsante
+function inyectarEstiloGlow() {
+    if (_estiloGlowInyectado) return;
+    _estiloGlowInyectado = true;
+
+    const style = document.createElement("style");
+    style.id = "al-zona-glow-style";
+    style.textContent = `
+        @keyframes al-zona-glow-pulso {
+            0%   { filter: drop-shadow(0 0 3px  currentColor) drop-shadow(0 0 6px  currentColor); }
+            50%  { filter: drop-shadow(0 0 12px currentColor) drop-shadow(0 0 22px currentColor); }
+            100% { filter: drop-shadow(0 0 3px  currentColor) drop-shadow(0 0 6px  currentColor); }
+        }
+        .al-zona-glow {
+            animation: al-zona-glow-pulso 1.6s ease-in-out infinite;
+            color: currentColor;
+        }
+        /* Verde neón sin glow */
+        .al-zona-sin-glow {
+            filter: none;
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+// Aplica el efecto glow pulsante al path del polígono
+function aplicarGlowPulsante(poligono, nivelKey) {
+    try {
+        const el = poligono.getElement();
+        if (!el) return;
+
+        const color = colorDeNivel(nivelKey);
+        el.classList.remove("al-zona-sin-glow");
+        el.classList.add("al-zona-glow");
+        // currentColor lo lee el filter drop-shadow
+        el.style.color = color;
+    } catch (e) {
+        console.warn("map.js: error aplicando glow:", e);
+    }
+}
+
+// Quita el glow del path
+function quitarGlow(poligono) {
+    try {
+        const el = poligono.getElement();
+        if (!el) return;
+        el.classList.remove("al-zona-glow");
+        el.classList.add("al-zona-sin-glow");
+        el.style.color = "";
+    } catch (e) {}
+}
+
+// ======================================================
+// ILUMINAR DISTRITO (rayo + punto sobre coordenada)
 // ======================================================
 export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     if (!map) return null;
@@ -99,9 +183,8 @@ export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     };
 }
 
-
 // ======================================================
-// ILUMINAR ZONA DESDE GEOJSON
+// ILUMINAR ZONA DESDE GEOJSON (punto real de la zona)
 // ======================================================
 export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     if (!map) return null;
@@ -227,7 +310,6 @@ export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     };
 }
 
-
 // ======================================================
 // CREAR MAPA
 // ======================================================
@@ -259,19 +341,17 @@ export function crearMapa(idDiv) {
     map.setView([-9.50, -77.00], 9);
 
     engancharBotonUbicacion();
+    inyectarEstiloGlow();
 
     return { cargarGeoJSON, irA, limpiarSeleccion, filtrarLugares };
 }
 
-
 // ======================================================
-// ENGANCHE ROBUSTO DEL BOTÓN DE UBICACIÓN
+// ENGANCHE BOTÓN UBICACIÓN
 // ======================================================
 function engancharBotonUbicacion() {
     const btnUbicacion = document.getElementById("btn-ubicacion");
-
     if (!btnUbicacion) {
-        console.warn("map.js: #btn-ubicacion aún no existe, reintentando...");
         if (document.readyState === "loading") {
             document.addEventListener("DOMContentLoaded", engancharBotonUbicacion);
         } else {
@@ -279,57 +359,34 @@ function engancharBotonUbicacion() {
         }
         return;
     }
-
     if (btnUbicacion.dataset.listener === "1") return;
 
     btnUbicacion.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        mostrarMiUbicacion();
+        e.preventDefault(); e.stopPropagation(); mostrarMiUbicacion();
     });
-
     btnUbicacion.addEventListener("touchend", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        mostrarMiUbicacion();
+        e.preventDefault(); e.stopPropagation(); mostrarMiUbicacion();
     }, { passive: false });
 
     btnUbicacion.dataset.listener = "1";
-    console.info("map.js: listener de ubicación enganchado ✅");
 }
-
 
 // ======================================================
 // MOSTRAR MI UBICACIÓN
 // ======================================================
 function mostrarMiUbicacion() {
-
-    console.log("📍 mostrarMiUbicacion() ejecutado");
-
     const btn = document.getElementById("btn-ubicacion");
-
-    if (!navigator.geolocation) {
-        alert("Tu navegador no soporta geolocalización.");
-        return;
-    }
-
+    if (!navigator.geolocation) { alert("Tu navegador no soporta geolocalización."); return; }
     if (btn) btn.classList.add("buscar");
 
-    const options = {
-        enableHighAccuracy: true,
-        timeout: 20000,
-        maximumAge: 30000
-    };
+    const options = { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 };
 
     navigator.geolocation.getCurrentPosition(
         (pos) => {
             if (btn) btn.classList.remove("buscar");
-
             const lat = pos.coords.latitude;
             const lng = pos.coords.longitude;
             const accuracy = pos.coords.accuracy;
-
-            console.log("📍 Ubicación obtenida:", lat, lng, "±", accuracy, "m");
 
             if (markerUbicacion) map.removeLayer(markerUbicacion);
             if (circleAccuracy) map.removeLayer(circleAccuracy);
@@ -373,15 +430,12 @@ function mostrarMiUbicacion() {
         },
         (error) => {
             if (btn) btn.classList.remove("buscar");
-
-            console.warn("📍 Error geolocalización:", error.code, error.message);
-
             let mensaje = "No se pudo obtener tu ubicación.\n\n";
             switch (error.code) {
-                case error.PERMISSION_DENIED:    mensaje += "⛔ Permiso denegado.\nRevisa la configuración del navegador."; break;
-                case error.POSITION_UNAVAILABLE: mensaje += "📡 Posición no disponible.\nIntenta cerca de una ventana o activa el GPS."; break;
-                case error.TIMEOUT:              mensaje += "⏱️ Tiempo agotado.\nActiva el GPS de alta precisión."; break;
-                default:                         mensaje += "Error desconocido: " + error.message;
+                case error.PERMISSION_DENIED:    mensaje += "⛔ Permiso denegado."; break;
+                case error.POSITION_UNAVAILABLE: mensaje += "📡 Posición no disponible."; break;
+                case error.TIMEOUT:              mensaje += "⏱️ Tiempo agotado."; break;
+                default:                         mensaje += "Error: " + error.message;
             }
             alert(mensaje);
         },
@@ -389,9 +443,8 @@ function mostrarMiUbicacion() {
     );
 }
 
-
 // ======================================================
-// CARGAR GEOJSON
+// CARGAR GEOJSON (lugares.json — NO se toca el color)
 // ======================================================
 function cargarGeoJSON(lugares) {
     if (geoLayer) {
@@ -411,10 +464,7 @@ function cargarGeoJSON(lugares) {
             .filter(f => f && f.geometry)
     };
 
-    if (geojson.features.length === 0) {
-        console.warn("map.js: no hay features válidas para dibujar");
-        return;
-    }
+    if (geojson.features.length === 0) return;
 
     try {
         geoLayer = L.geoJSON(geojson, {
@@ -440,22 +490,17 @@ function cargarGeoJSON(lugares) {
     }
 }
 
-
 // ======================================================
 // FILTRAR LUGARES
 // ======================================================
 export function filtrarLugares(predicado) {
     if (!geoLayer || typeof predicado !== "function") return 0;
-
     let visibles = 0;
-
     geoLayer.eachLayer(layer => {
         const f = layer.feature;
         if (!f) return;
-
         const props = f.properties || {};
         const mostrar = predicado(props);
-
         if (mostrar) {
             if (!map.hasLayer(layer)) layer.addTo(map);
             visibles++;
@@ -463,10 +508,8 @@ export function filtrarLugares(predicado) {
             if (map.hasLayer(layer)) map.removeLayer(layer);
         }
     });
-
     return visibles;
 }
-
 
 function limpiarSeleccion() {
     if (markerSeleccionado) {
@@ -474,54 +517,43 @@ function limpiarSeleccion() {
     }
 }
 
-
 function irA(lugar) {
     limpiarSeleccion();
-
     map.flyTo([lugar.lat, lugar.lng], 18, { duration: 1.2 });
-
     map.once("moveend", () => {
         const desplazamientoY = Math.round(map.getSize().y * 0.10);
         map.panBy([0, desplazamientoY], { animate: true, duration: 0.5 });
     });
-
     if (!geoLayer) return;
-
     geoLayer.eachLayer(layer => {
         const f = layer.feature;
         if (f === lugar.feature) {
             markerSeleccionado = layer;
-            if (layer.setStyle) {
-                layer.setStyle({ radius: 11, fillColor: "#ff4444" });
-            }
+            if (layer.setStyle) layer.setStyle({ radius: 11, fillColor: "#ff4444" });
             layer.openPopup();
         }
     });
 }
 
-
 // ======================================================
-// CARGAR ZONAS.JSON
+// PINTAR POLÍGONO DE ZONA
+// ------------------------------------------------------------
+// - Sin alerta (nivel = "verde" o null): VERDE_NEON, sin glow.
+// - Con alerta: color del nivel + glow pulsante.
 // ======================================================
-async function cargarZonas() {
-    if (zonasData) return zonasData;
-    try {
-        const resp = await fetch("./zonas.json");
-        zonasData = await resp.json();
-        return zonasData;
-    } catch (e) {
-        console.warn("map.js: no se pudo cargar zonas.json", e);
-        return null;
-    }
-}
-
-
-// ======================================================
-// PINTAR POLÍGONO DE ZONA — v7 con fitBounds
-// ======================================================
-export async function pintarPoligonoZona(nombreZona, color = "#e74c3c") {
+export async function pintarPoligonoZona(nombreZona, color = VERDE_NEON, nivelKey = null) {
     if (!map) return null;
 
+    // Si no viene nivelKey, deducirlo del color
+    if (!nivelKey) {
+        if (color === VERDE_NEON || color === "#2ECC71" || color === "#2ecc71") nivelKey = "vigilancia";
+        else if (color === "#FFD400" || color === "#f1c40f") nivelKey = "amarilla";
+        else if (color === "#FF8C00" || color === "#e67e22") nivelKey = "naranja";
+        else if (color === "#FA5858" || color === "#e74c3c") nivelKey = "roja";
+        else nivelKey = "vigilancia";
+    }
+
+    // Quitar si ya existía para repintar con nuevos valores
     quitarPoligonoZona(nombreZona);
 
     const data = await cargarZonas();
@@ -541,38 +573,47 @@ export async function pintarPoligonoZona(nombreZona, color = "#e74c3c") {
 
     const latlngs = zona.poligono.map(coord => [coord[1], coord[0]]);
 
+    const tieneAlerta = nivelKey !== "vigilancia";
+    const colorFinal = tieneAlerta ? colorDeNivel(nivelKey) : VERDE_NEON;
+    const fillOp = tieneAlerta ? 0.5 : 0.35;
+
     const poligono = L.polygon(latlngs, {
-        color, weight: 4, opacity: 0.9,
-        fillColor: color, fillOpacity: 0.3, dashArray: "10 6"
+        color: colorFinal,
+        weight: 3,
+        opacity: 1.0,
+        fillColor: colorFinal,
+        fillOpacity: fillOp,
+        dashArray: null
     }).addTo(map);
 
     poligono.bindPopup(
-        `<b>⚡ ${zona.nombre}</b><br>Zona bajo alerta meteorológica`
+        `<b>⚡ ${zona.nombre}</b><br>` +
+        (tieneAlerta ? `Zona bajo alerta meteorológica` : `Zona sin alerta`)
     );
 
-    poligonosActivos.set(zona.nombre, { poligono, color });
-
-    // FIX 4: encuadrar la zona completa SOLO la primera vez
-    // (cuando se pinta el primer polígono). Las siguientes zonas
-    // respetan el zoom actual para no marear al usuario.
-    if (poligonosActivos.size === 1) {
-        try {
-            map.fitBounds(poligono.getBounds(), {
-                padding: [40, 40],
-                maxZoom: 13
-            });
-        } catch (e) {}
+    // Aplicar glow después de que el path esté en el DOM
+    if (tieneAlerta) {
+        setTimeout(() => aplicarGlowPulsante(poligono, nivelKey), 50);
+    } else {
+        setTimeout(() => quitarGlow(poligono), 50);
     }
 
+    poligonosActivos.set(zona.nombre, {
+        poligono,
+        color: colorFinal,
+        nivel: nivelKey,
+        zona
+    });
+
     return {
-        zona, poligono,
+        zona,
+        poligono,
         detener() { quitarPoligonoZona(zona.nombre); }
     };
 }
 
-
 // ======================================================
-// QUITAR UN POLÍGONO ESPECÍFICO
+// QUITAR UN POLÍGONO
 // ======================================================
 export function quitarPoligonoZona(nombreZona) {
     if (!map) return false;
@@ -589,9 +630,8 @@ export function quitarPoligonoZona(nombreZona) {
     return false;
 }
 
-
 // ======================================================
-// QUITAR TODOS LOS POLÍGONOS
+// QUITAR TODOS
 // ======================================================
 export function limpiarPoligonosZona() {
     if (!map) return;
@@ -601,10 +641,35 @@ export function limpiarPoligonosZona() {
     poligonosActivos.clear();
 }
 
-
 // ======================================================
 // CONSULTAR POLÍGONOS ACTIVOS
 // ======================================================
 export function obtenerPoligonosActivos() {
     return Array.from(poligonosActivos.keys());
+}
+
+// ======================================================
+// PINTAR LAS 4 ZONAS DE ZONAS.JSON EN VERDE NEÓN
+// ------------------------------------------------------------
+// Al arrancar el mapa, pinta las 4 zonas con el verde neón
+// (sin alerta). Cuando llegue una alerta, alertas.js llamará
+// a pintarPoligonoZona() con el color del nivel correspondiente.
+// ======================================================
+export async function pintarZonasBaseVerde() {
+    if (!map) return;
+
+    const data = await cargarZonas();
+    if (!data || !data.zonas) {
+        console.warn("map.js: no se pudo cargar zonas.json para pintar zonas base");
+        return;
+    }
+
+    for (const zona of data.zonas) {
+        try {
+            await pintarPoligonoZona(zona.nombre, VERDE_NEON, "vigilancia");
+        } catch (e) {
+            console.warn("map.js: error pintando zona base:", zona.nombre, e);
+        }
+    }
+    console.log(`[map] ${data.zonas.length} zonas pintadas en verde neón`);
 }
