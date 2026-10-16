@@ -2,33 +2,24 @@
    ============================================================
    Sistema de Alerta Meteorológica — Buscador Lugares Antamina
    ------------------------------------------------------------
-   12 efectos e integraciones:
-   1. Banner de alerta a pantalla completa (baja + rebote + resplandor)
-   2. Flash de fondo (relámpago sutil, no repetitivo)
-   3. Barra superior permanente (esquina superior DERECHA)
-   4. Tarjeta flotante inferior derecha (sube desde abajo)
-   5. Pulso radar alrededor del icono
-   6. Contador regresivo
-   7. Mapa iluminado (círculo rojo parpadeante + rayo)
-   8. Efecto sirena (borde rojo↔naranja cada segundo)
-   9. Niveles de alerta con colores estandarizados
-   10. Iconografía grande (70-100px)
-   11. Animación del rayo SVG (aparece/brilla/desaparece)
-   12. Botones de acción destacados
+   v4 (2026-10):
+   - #al-tarjeta separada 15px del footer (fixed bottom calc).
+   - Keyframes de glow pulsante para polígonos de zona en alerta.
    ============================================================ */
 
 /* ============================================================
    VARIABLES POR NIVEL DE ALERTA
    ============================================================ */
 :root {
-    --al-vigilancia: #2ecc71;   /* 🟢 verde  */
-    --al-precaucion: #f1c40f;   /* 🟡 amarillo */
-    --al-alerta:     #e67e22;   /* 🟠 naranja */
-    --al-emergencia: #e74c3c;   /* 🔴 rojo    */
+    --al-vigilancia: #2ecc71;
+    --al-precaucion: #f1c40f;
+    --al-alerta:     #e67e22;
+    --al-emergencia: #e74c3c;
+    --al-verde-neon: #39ff14;
 }
 
 /* ============================================================
-   2. FLASH DE FONDO (efecto relámpago, sutil, no repetitivo)
+   FLASH DE FONDO
    ============================================================ */
 @keyframes al-flash-relampago {
     0%   { background-color: transparent; }
@@ -47,7 +38,7 @@
 }
 
 /* ============================================================
-   1. OVERLAY OSCURECIDO + BANNER A PANTALLA COMPLETA
+   OVERLAY + BANNER A PANTALLA COMPLETA
    ============================================================ */
 #al-overlay {
     position: fixed;
@@ -70,7 +61,6 @@
     opacity: 1;
 }
 
-/* Panel del banner — baja desde arriba con rebote */
 .al-panel {
     width: min(92vw, 640px);
     margin-top: -120vh;
@@ -86,7 +76,6 @@
     transform: translateY(0);
 }
 
-/* Animación de bajada + rebote */
 @keyframes al-bajar-rebote {
     0%   { margin-top: -120vh; }
     60%  { margin-top: 30px; }
@@ -100,7 +89,6 @@
     animation: al-bajar-rebote 0.9s cubic-bezier(0.22, 1.2, 0.36, 1) forwards;
 }
 
-/* Resplandor periódico alrededor del panel */
 @keyframes al-resplandor {
     0%, 100% { box-shadow: 0 20px 60px rgba(0,0,0,0.5),
                             0 0 0 rgba(231,76,60,0); }
@@ -113,9 +101,6 @@
                al-resplandor 2.4s ease-in-out 1s infinite;
 }
 
-/* ============================================================
-   8. EFECTO SIRENA — borde del panel rojo↔naranja cada segundo
-   ============================================================ */
 @keyframes al-sirena-borde {
     0%, 100% { border-color: var(--al-color, #e74c3c); }
     50%      { border-color: var(--al-color-dark, #c0392b); }
@@ -138,7 +123,7 @@
 }
 
 /* ============================================================
-   10 + 5. ICONO GRANDE CON PULSO RADAR
+   ICONO GRANDE + PULSO RADAR
    ============================================================ */
 .al-icono-wrap {
     position: relative;
@@ -188,7 +173,7 @@
 }
 
 /* ============================================================
-   11. ANIMACIÓN DEL RAYO SVG
+   ANIMACIÓN DEL RAYO SVG
    ============================================================ */
 .al-rayo-svg {
     position: absolute;
@@ -255,7 +240,7 @@
 }
 
 /* ============================================================
-   6. CONTADOR REGRESIVO
+   CONTADOR REGRESIVO
    ============================================================ */
 .al-contador-wrap {
     text-align: center;
@@ -289,7 +274,7 @@
 }
 
 /* ============================================================
-   12. BOTONES DE ACCIÓN DESTACADOS
+   BOTONES DE ACCIÓN
    ============================================================ */
 .al-botones {
     display: flex;
@@ -352,17 +337,17 @@
 }
 
 /* ============================================================
-   3. BARRA SUPERIOR PERMANENTE (Ubicada arriba a la DERECHA)
+   BARRA SUPERIOR PERMANENTE
    ============================================================ */
 #al-barra-superior {
     position: fixed;
-    top: 14px;                  /* Margen superior */
-    right: 16px;                /* Fijado a la DERECHA */
-    left: auto !important;      /* Anula cualquier centrado */
+    top: 14px;
+    right: 16px;
+    left: auto !important;
     margin: 0 !important;
 
     width: auto;
-    max-width: 320px;           /* Tamaño compacto */
+    max-width: 320px;
     min-height: 38px;
 
     z-index: 25000;
@@ -379,11 +364,11 @@
 
     background: linear-gradient(
         135deg,
-        rgba(26, 77, 46, 0.94),
-        rgba(13, 53, 32, 0.88)
+        var(--al-color-dark, #c0392b),
+        var(--al-color, #e74c3c)
     );
 
-    border: 1px solid rgba(46, 204, 113, 0.65);
+    border: 1px solid var(--al-color, #e74c3c);
     border-radius: 8px;
 
     backdrop-filter: blur(10px);
@@ -391,7 +376,7 @@
 
     box-shadow:
         0 4px 15px rgba(0, 0, 0, 0.3),
-        0 0 12px rgba(46, 204, 113, 0.2);
+        0 0 12px var(--al-glow, rgba(231,76,60,0.6));
 
     transform: translateY(-100px);
     transition: transform 0.4s cubic-bezier(0.22, 1.2, 0.36, 1);
@@ -436,18 +421,23 @@
 }
 
 /* ============================================================
-   4. TARJETA FLOTANTE (esquina inferior derecha)
+   TARJETA FLOTANTE — separada 15px del footer
    ============================================================ */
 #al-tarjeta {
     position: fixed;
-    bottom: 20px;
+    /* Footer 27px + 15px de separación + safe-area para móviles con notch */
+    bottom: calc(27px + 15px + env(safe-area-inset-bottom, 0px));
     right: 20px;
     left: auto !important;
     width: 240px;
     max-width: calc(100vw - 32px);
     padding: 12px 14px;
     border-radius: 12px;
-    background: rgba(20, 20, 25, 0.92);
+    background: linear-gradient(
+        160deg,
+        rgba(20, 20, 25, 0.96),
+        var(--al-color-dark, #c0392b)
+    );
     border-left: 4px solid var(--al-color, #e74c3c);
     color: #fff;
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -544,7 +534,7 @@
 .al-tarjeta-cerrar:hover { color: #fff; }
 
 /* ============================================================
-   7. EFECTOS EN EL MAPA
+   EFECTOS EN EL MAPA
    ============================================================ */
 .al-mapa-rayo {
     position: relative;
@@ -570,6 +560,23 @@
 @keyframes al-mapa-pulso {
     0%, 100% { opacity: 0.9; }
     50%      { opacity: 0.3; }
+}
+
+/* ============================================================
+   GLOW PULSANTE PARA POLÍGONOS DE ZONA EN ALERTA
+   ============================================================ */
+@keyframes al-zona-glow-pulso {
+    0%   { filter: drop-shadow(0 0 3px  currentColor) drop-shadow(0 0 6px  currentColor); }
+    50%  { filter: drop-shadow(0 0 12px currentColor) drop-shadow(0 0 22px currentColor); }
+    100% { filter: drop-shadow(0 0 3px  currentColor) drop-shadow(0 0 6px  currentColor); }
+}
+
+.al-zona-glow {
+    animation: al-zona-glow-pulso 1.6s ease-in-out infinite;
+}
+
+.al-zona-sin-glow {
+    filter: none;
 }
 
 /* ============================================================
@@ -663,7 +670,7 @@
 .al-modal-cerrar:active { transform: scale(0.97); }
 
 /* ============================================================
-   9. LEYENDA DE NIVELES (mostrada en el modal)
+   LEYENDA DE NIVELES
    ============================================================ */
 .al-leyenda {
     margin: 8px 0 18px;
@@ -691,7 +698,7 @@
 .al-leyenda-desc { color: #bbb; font-size: 12px; }
 
 /* ============================================================
-   ESTADO "LIBRE DE ALERTAS" (verde / vigilancia por defecto)
+   ESTADO "LIBRE DE ALERTAS"
    ============================================================ */
 #al-overlay.al-libre {
     background: rgba(20, 60, 35, 0.45);
@@ -828,7 +835,7 @@
 #al-tarjeta.al-modo-libre .al-tarjeta-cerrar { display: none !important; }
 
 /* ============================================================
-   RESPONSIVE (Ajustes para pantallas pequeñas < 600px)
+   RESPONSIVE
    ============================================================ */
 @media (max-width: 600px) {
     .al-panel { padding: 22px 16px 20px; }
@@ -839,7 +846,6 @@
     .al-btn { min-width: 100%; }
     .al-botones { flex-direction: column; }
 
-    /* Barra superior en Móvil: Se mantiene a la derecha sin aplastar el título */
     #al-barra-superior {
         top: 10px !important;
         right: 10px !important;
@@ -854,9 +860,7 @@
     .al-barra-tiempo { display: none !important; }
     .al-barra-cerrar { width: 18px !important; height: 18px !important; font-size: 11px !important; }
 
-    /* Tarjeta Flotante Inferior Derecha */
     #al-tarjeta {
-        bottom: 12px !important;
         right: 10px !important;
         left: auto !important;
         width: 175px !important;
@@ -875,7 +879,6 @@
     .al-tarjeta-cerrar { top: 4px !important; right: 6px !important; font-size: 12px !important; }
 }
 
-/* Respetar preferencia de movimiento reducido */
 @media (prefers-reduced-motion: reduce) {
     .al-panel,
     .al-radar,
@@ -883,7 +886,8 @@
     .al-icono,
     .al-mapa-rayo-svg,
     #al-barra-superior,
-    .al-contador.al-critico {
+    .al-contador.al-critico,
+    .al-zona-glow {
         animation: none !important;
     }
     #al-overlay.al-visible .al-panel { margin-top: 20px; }
