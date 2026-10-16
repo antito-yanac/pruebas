@@ -2,9 +2,10 @@
    ============================================================
    Sistema de Alerta Meteorológica — Buscador Lugares Antamina
    ------------------------------------------------------------
-   v4 (2026-10):
-   - #al-tarjeta separada 15px del footer (fixed bottom calc).
-   - Keyframes de glow pulsante para polígonos de zona en alerta.
+   v5 (2026-10):
+   - background/border del panel, barra y tarjeta se aplican por
+     JS (fix Chrome cacheo). El CSS deja solo fallbacks estáticos.
+   - Los bloques .al-modo-libre conservan su fondo verde estático.
    ============================================================ */
 
 /* ============================================================
@@ -71,8 +72,10 @@
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
     position: relative;
     overflow: hidden;
-    background: linear-gradient(160deg, var(--al-color, #e74c3c), var(--al-color-dark, #c0392b));
-    border: 3px solid var(--al-color, #e74c3c);
+    /* background y border-color se aplican por JS (fix Chrome cacheo).
+       Aquí solo fallback estático. */
+    background: linear-gradient(160deg, #e74c3c, #c0392b);
+    border: 3px solid #e74c3c;
     transform: translateY(0);
 }
 
@@ -341,7 +344,7 @@
    ============================================================ */
 #al-barra-superior {
     position: fixed;
-       top: 14px;
+    top: 14px;
     right: 16px;
     left: auto !important;
     margin: 0 !important;
@@ -362,14 +365,10 @@
     font-size: 11px;
     font-weight: 600;
 
-    /* Mismo matiz que #al-tarjeta: fondo oscuro → colorDark */
-    background: linear-gradient(
-        160deg,
-        rgba(20, 20, 25, 0.96),
-        var(--al-color-dark, #c0392b)
-    );
-
-    border: 1px solid var(--al-color, #e74c3c);
+    /* background y border-color se aplican por JS (fix Chrome cacheo).
+       Aquí solo fallback estático. */
+    background: linear-gradient(160deg, rgba(20,20,25,0.96), #c0392b);
+    border: 1px solid #e74c3c;
     border-radius: 8px;
 
     backdrop-filter: blur(10px);
@@ -422,11 +421,11 @@
 }
 
 /* ============================================================
-   TARJETA FLOTANTE — separada 15px del footer
+   TARJETA FLOTANTE — separada 5px del footer
    ============================================================ */
 #al-tarjeta {
     position: fixed;
-    /* Footer 27px + 15px de separación + safe-area para móviles con notch */
+    /* Footer 27px + 5px de separación + safe-area para móviles con notch */
     bottom: calc(27px + 5px + env(safe-area-inset-bottom, 0px));
     right: 20px;
     left: auto !important;
@@ -434,12 +433,12 @@
     max-width: calc(100vw - 32px);
     padding: 12px 14px;
     border-radius: 12px;
-    background: linear-gradient(
-        160deg,
-        rgba(20, 20, 25, 0.96),
-        var(--al-color-dark, #c0392b)
-    );
-    border-left: 4px solid var(--al-color, #e74c3c);
+
+    /* background y border-left se aplican por JS (fix Chrome cacheo).
+       Aquí solo fallback estático. */
+    background: linear-gradient(160deg, rgba(20,20,25,0.96), #c0392b);
+    border-left: 4px solid #e74c3c;
+
     color: #fff;
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
     box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
@@ -699,7 +698,11 @@
 .al-leyenda-desc { color: #bbb; font-size: 12px; }
 
 /* ============================================================
-   ESTADO "LIBRE DE ALERTAS"
+   ESTADO "LIBRE DE ALERTAS" (overlay + panel)
+   ------------------------------------------------------------
+   El modo libre SÍ usa background estático porque no cambia
+   dinámicamente entre niveles. El JS resetea los inline styles
+   para que estas reglas tomen el control.
    ============================================================ */
 #al-overlay.al-libre {
     background: rgba(20, 60, 35, 0.45);
@@ -784,10 +787,15 @@
 
 /* ============================================================
    MODO "LIBRE" — Barra superior + Tarjeta verde PERSISTENTE
+   ------------------------------------------------------------
+   El JS resetea los inline styles (background) para que estas
+   reglas tomen el control cuando el estado es "libre".
    ============================================================ */
 #al-barra-superior.al-modo-libre {
     display: flex !important;
     transform: translateY(0) !important;
+    background: linear-gradient(160deg, #1a4d2e 0%, #0d3520 100%) !important;
+    border: 1px solid var(--al-color, #2ecc71) !important;
 }
 
 #al-barra-superior.al-modo-libre .al-barra-icono {
@@ -816,8 +824,8 @@
     display: block !important;
     transform: translateY(0) !important;
     opacity: 1 !important;
-    background: linear-gradient(160deg, #1a4d2e 0%, #0d3520 100%);
-    border-left: 4px solid var(--al-color, #2ecc71);
+    background: linear-gradient(160deg, #1a4d2e 0%, #0d3520 100%) !important;
+    border-left: 4px solid var(--al-color, #2ecc71) !important;
     box-shadow: 0 4px 30px rgba(46, 204, 113, 0.35), 0 0 15px rgba(46, 204, 113, 0.2);
 }
 
