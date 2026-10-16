@@ -1,25 +1,29 @@
 // js/alertas.js
 //
 // ============================================================
-// Sistema de Alerta Meteorológica — v3.7
+// Sistema de Alerta Meteorológica — v3.8
 // ------------------------------------------------------------
-// v3.7: modo manual vs automático (scraper).
-//   - Cuando `estado.modo === "manual"`, las alertas con
-//     origen === "manual" degradan (rojo→naranja→amarilla→libre).
-//   - Las alertas del scraper (origen null) NUNCA degradan.
-//   - Barrera de arranque: mostrarAlertaLibre() espera 1.5s a
-//     que los listeners terminen su primera lectura.
-//   - Nivel efectivo calculado en tiempo real.
+// v3.8: zonas verdes neón por defecto + glow pulsante en alertas.
+//   - Al arrancar, se pintan las 4 zonas de zonas.json en verde
+//     neón #39ff14 (sin glow).
+//   - Al activarse una alerta en una zona, esa zona se repinta
+//     con el color del nivel (amarillo/naranja/rojo) + glow.
+//   - Al liberar, la zona vuelve a verde neón.
+//   - lugares.json NO se toca.
+//   - Degradación solo manual (origen === "manual").
+//   - Barrera de arranque (1.5s) para no parpadear verde.
 // ============================================================
 
 import { reproducirSonidoAlerta, detenerSonidoAlerta } from "./notifications.js";
+
+const VERDE_NEON = "#39ff14";
 
 // ----------------------------------------------------------
 // Niveles
 // ----------------------------------------------------------
 export const NIVELES_ALERTA = {
     vigilancia: {
-        nombre: "Vigilancia", color: "#2ecc71", colorDark: "#27ae60",
+        nombre: "Vigilancia", color: VERDE_NEON, colorDark: "#27ae60",
         glow: "rgba(46,204,113,0.6)", icono: "🟢", iconoBig: "🌩️",
         descripcion: "Actividad eléctrica lejana.",
         recomendacion: "Manténgase informado sobre el desarrollo del clima.",
@@ -112,9 +116,6 @@ const MINUTOS_DEGRADACION = 1;
 // ----------------------------------------------------------
 // BARRERA DE ARRANQUE
 // ----------------------------------------------------------
-// Evita que mostrarAlertaLibre() pinte antes de que los listeners
-// (Firestore y estado.json) hayan terminado su primera lectura.
-// ----------------------------------------------------------
 const arranque = {
     esperando: true,
     listos: new Set(),
@@ -122,16 +123,9 @@ const arranque = {
     TIMEOUT_MS: 1500
 };
 
-/**
- * Marca una fuente como lista.
- * @param {string} fuente - "firestore" o "estado-cliente"
- */
 export function marcarArranqueListo(fuente) {
     if (!arranque.esperando) return;
     arranque.listos.add(fuente);
-    console.log(`[alertas] arranque: ${fuente} listo (${arranque.listos.size})`);
-
-    // Cuando ambas fuentes han terminado, liberar la barrera
     if (arranque.listos.has("firestore") && arranque.listos.has("estado-cliente")) {
         liberarArranque();
     }
@@ -144,23 +138,17 @@ function liberarArranque() {
         clearTimeout(arranque.timeoutId);
         arranque.timeoutId = null;
     }
-    console.log("[alertas] arranque: barrera liberada");
-    // Si nadie mostró una alerta, mostrar libre
     if (estado.zonasActivas.size === 0 && !libreYaCerradoPorUsuario) {
         mostrarAlertaLibre(true);
     }
 }
 
-// Iniciar timeout de seguridad (1.5s)
 arranque.timeoutId = setTimeout(() => {
-    if (arranque.esperando) {
-        console.warn("[alertas] arranque: timeout — liberando barrera sin esperar más");
-        liberarArranque();
-    }
+    if (arranque.esperando) liberarArranque();
 }, arranque.TIMEOUT_MS);
 
 // ----------------------------------------------------------
-// CÁLCULO DEL NIVEL EFECTIVO (DEGRADACIÓN SOLO MANUAL)
+// NIVEL EFECTIVO (degradación solo manual)
 // ----------------------------------------------------------
 export function calcularNivelEfectivo(nivelOriginal, timestampInicio, duracionMin, origen = null) {
     const elapsedMin = (Date.now() - timestampInicio) / 60000;
@@ -187,7 +175,6 @@ export function calcularNivelEfectivo(nivelOriginal, timestampInicio, duracionMi
         if (elapsedMin < D + MINUTOS_DEGRADACION)     return { nivel: "amarilla",restanteSeg: Math.max(0, Math.ceil((D + MINUTOS_DEGRADACION - elapsedMin) * 60)) };
         return { nivel: "libre", restanteSeg: 0 };
     }
-    // amarilla
     if (elapsedMin < D)                     return { nivel: "amarilla", restanteSeg: Math.max(0, Math.ceil((D - elapsedMin) * 60)) };
     return { nivel: "libre", restanteSeg: 0 };
 }
@@ -301,7 +288,6 @@ async function obtenerModuloMapa() {
 function iniciarIntervalMaestro() {
     if (estado.intervalMaestro !== null) return;
     estado.intervalMaestro = setInterval(tickMaestro, 1000);
-    console.log("[alertas] interval maestro iniciado");
 }
 
 function detenerIntervalMaestro() {
@@ -323,9 +309,18 @@ async function tickMaestro() {
         }
 
         if (ef.nivel !== zona.nivelActual) {
-            const anterior = zona.nivelActual;
             zona.nivelActual = ef.nivel;
-            console.log(`[alertas] ${distrito}: ${anterior} → ${ef.nivel} (degradación)`);
+
+            // Repintar polígono con nuevo color + glow
+            const mod = await obtenerModuloMapa();
+            if (mod && typeof mod.pintarPoligonoZona === "function") {
+                const nivel = NIVELES_ALERTA[ef.nivel];
+                if (nivel) {
+                    try {
+                        await mod.pintarPoligonoZona(distrito, nivel.color, ef.nivel);
+                    } catch (e) {}
+                }
+            }
 
             if (estado.bannerActual === distrito) {
                 const overlay = document.getElementById("al-overlay");
@@ -373,6 +368,20 @@ function tiempoRestanteZona(zona) {
 }
 
 // ----------------------------------------------------------
+// PINTAR ZONAS BASE VERDE (llamada al arrancar)
+// ----------------------------------------------------------
+export async function pintarZonasBaseSiProcede() {
+    try {
+        const mod = await import("./map.js");
+        if (mod && typeof mod.pintarZonasBaseVerde === "function") {
+            await mod.pintarZonasBaseVerde();
+        }
+    } catch (e) {
+        console.warn("alertas.js: no se pudo pintar zonas base:", e);
+    }
+}
+
+// ----------------------------------------------------------
 // MOSTRAR ALERTA COMPLETA
 // ----------------------------------------------------------
 export async function mostrarAlertaCompleta(datos = {}) {
@@ -406,14 +415,18 @@ export async function mostrarAlertaCompleta(datos = {}) {
 
         iniciarIntervalMaestro();
 
+        // Repintar polígono de esa zona con color del nivel + glow
         if (datos.distrito) {
             const mod = await obtenerModuloMapa();
             if (mod && typeof mod.pintarPoligonoZona === "function") {
                 const nivel = NIVELES_ALERTA[nivelKey];
-                await mod.pintarPoligonoZona(datos.distrito, nivel.color);
+                try {
+                    await mod.pintarPoligonoZona(datos.distrito, nivel.color, nivelKey);
+                } catch (e) {}
             }
         }
 
+        // Rayo + círculo (solo si es la primera vez que se activa esa zona)
         if (!yaExistia && datos.lat != null && datos.lng != null) {
             const mod = await obtenerModuloMapa();
             if (mod && typeof mod.iluminarDistrito === "function") {
@@ -473,11 +486,15 @@ export async function quitarAlerta(distrito) {
         }
         if (!distritoReal) return false;
 
+        // Repintar la zona en VERDE NEÓN (sin alerta) — SIN quitarla del mapa
         const mod = await obtenerModuloMapa();
-        if (mod && typeof mod.quitarPoligonoZona === "function") {
-            mod.quitarPoligonoZona(distritoReal);
+        if (mod && typeof mod.pintarPoligonoZona === "function") {
+            try {
+                await mod.pintarPoligonoZona(distritoReal, VERDE_NEON, "vigilancia");
+            } catch (e) {}
         }
 
+        // Quitar rayo/círculo
         if (capasRayos.has(distritoReal)) {
             try { capasRayos.get(distritoReal).detener(); } catch (e) {}
             capasRayos.delete(distritoReal);
@@ -784,9 +801,7 @@ export function mostrarBarraTarjetaLibre() {
 // ----------------------------------------------------------
 export function mostrarAlertaLibre(forzar = false) {
     try {
-        // Si la barrera de arranque está esperando y no es forzado, posponer
         if (!forzar && arranque.esperando) {
-            console.log("[alertas] mostrarAlertaLibre pospuesta por barrera de arranque");
             return;
         }
 
@@ -807,8 +822,12 @@ export function mostrarAlertaLibre(forzar = false) {
         }
         capasRayos.clear();
 
+        // Repintar todas las zonas base en verde neón
         obtenerModuloMapa().then(mod => {
-            if (mod && typeof mod.limpiarPoligonosZona === "function") mod.limpiarPoligonosZona();
+            if (!mod) return;
+            if (typeof mod.pintarZonasBaseVerde === "function") {
+                mod.pintarZonasBaseVerde().catch(() => {});
+            }
         }).catch(() => {});
 
         estado.zonasActivas.clear();
@@ -950,7 +969,9 @@ export function cerrarAlertaTotal() {
     estado.colaBanners = [];
     estado.bannerActual = null;
     obtenerModuloMapa().then(mod => {
-        if (mod && typeof mod.limpiarPoligonosZona === "function") mod.limpiarPoligonosZona();
+        if (mod && typeof mod.pintarZonasBaseVerde === "function") {
+            mod.pintarZonasBaseVerde().catch(() => {});
+        }
     }).catch(() => {});
 }
 
