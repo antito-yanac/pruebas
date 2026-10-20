@@ -1,9 +1,8 @@
 // js/map.js
 // ============================================================
 //  Mapa Leaflet — Antamina
-//  v12: lee window.__APP_CONFIG__.zonasFile (zonas.json o zonas2.json).
-//       En modo "manual" oculta Tajo. En modo "keraunos" pinta las 4.
-//       En modo keraunos NO pinta los polígonos azules de lugares.json.
+//  v13: fix fitBounds después de pintar zonas base (keraunos.html).
+//       Sin esto, el mapa queda en zoom 9 y las zonas no se ven.
 // ============================================================
 
 let map;
@@ -18,13 +17,11 @@ let circleAccuracy   = null;
 let watchId          = null;
 let iconoTu          = null;
 
-// Configuración (o defaults)
 const APP_CONFIG = window.__APP_CONFIG__ || {
     modo: "manual",
     zonasFile: "./zonas.json"
 };
 
-// Zonas ocultas SOLO en modo manual
 const ZONAS_OCULTAS_MANUAL = ["Zona 4 - Tajo"];
 
 function esZonaOcultaManual(nombreZona) {
@@ -38,7 +35,6 @@ function esZonaOcultaManual(nombreZona) {
     );
 }
 
-// Paleta
 const VERDE_BASE = "#22c55e";
 
 const COLORES_NIVEL = {
@@ -59,9 +55,6 @@ const poligonosActivos = new Map();
 let zonasData = null;
 let _estiloGlowInyectado = false;
 
-// ======================================================
-// Carga de zonas (zonas.json o zonas2.json)
-// ======================================================
 async function cargarZonas() {
     if (zonasData) return zonasData;
     try {
@@ -75,9 +68,6 @@ async function cargarZonas() {
     }
 }
 
-// ======================================================
-// Glow pulsante
-// ======================================================
 function inyectarEstiloGlow() {
     if (_estiloGlowInyectado) return;
     _estiloGlowInyectado = true;
@@ -123,9 +113,6 @@ function quitarGlow(poligono) {
     } catch (e) {}
 }
 
-// ======================================================
-// ILUMINAR DISTRITO (rayo + núcleo + pulso sobre un punto)
-// ======================================================
 export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     if (!map) return null;
 
@@ -184,9 +171,6 @@ export function iluminarDistrito(lat, lng, nivelKey = "roja") {
     };
 }
 
-// ======================================================
-// ILUMINAR ZONA DESDE GEOJSON (punto real)
-// ======================================================
 export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     if (!map) return null;
 
@@ -311,9 +295,6 @@ export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
     };
 }
 
-// ======================================================
-// CREAR MAPA
-// ======================================================
 export function crearMapa(idDiv) {
 
     map = L.map(idDiv, { zoomControl: false });
@@ -347,9 +328,6 @@ export function crearMapa(idDiv) {
     return { cargarGeoJSON, irA, limpiarSeleccion, filtrarLugares };
 }
 
-// ======================================================
-// ENGANCHE BOTÓN UBICACIÓN
-// ======================================================
 function engancharBotonUbicacion() {
     const btnUbicacion = document.getElementById("btn-ubicacion");
     if (!btnUbicacion) {
@@ -372,9 +350,6 @@ function engancharBotonUbicacion() {
     btnUbicacion.dataset.listener = "1";
 }
 
-// ======================================================
-// MOSTRAR MI UBICACIÓN
-// ======================================================
 function mostrarMiUbicacion() {
     const btn = document.getElementById("btn-ubicacion");
     if (!navigator.geolocation) { alert("Tu navegador no soporta geolocalización."); return; }
@@ -444,9 +419,6 @@ function mostrarMiUbicacion() {
     );
 }
 
-// ======================================================
-// CARGAR GEOJSON (lugares.json) — se llama desde app.js SOLO en modo manual
-// ======================================================
 function cargarGeoJSON(lugares) {
     if (geoLayer) {
         try { geoLayer.remove(); } catch (e) {}
@@ -491,9 +463,6 @@ function cargarGeoJSON(lugares) {
     }
 }
 
-// ======================================================
-// FILTRAR LUGARES
-// ======================================================
 export function filtrarLugares(predicado) {
     if (!geoLayer || typeof predicado !== "function") return 0;
     let visibles = 0;
@@ -536,9 +505,6 @@ function irA(lugar) {
     });
 }
 
-// ======================================================
-// PINTAR POLÍGONO DE ZONA
-// ======================================================
 export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKey = null) {
     if (!map) return null;
 
@@ -607,9 +573,6 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKe
     };
 }
 
-// ======================================================
-// QUITAR POLÍGONO
-// ======================================================
 export function quitarPoligonoZona(nombreZona) {
     if (!map) return false;
 
@@ -642,7 +605,7 @@ export function esZonaOcultaExport(nombreZona) {
 }
 
 // ======================================================
-// PINTAR ZONAS BASE VERDE
+// PINTAR ZONAS BASE VERDE (con fitBounds)
 // ======================================================
 export async function pintarZonasBaseVerde() {
     if (!map) return;
@@ -663,5 +626,33 @@ export async function pintarZonasBaseVerde() {
             console.warn("map.js: error pintando zona base:", zona.nombre, e);
         }
     }
+
+    // FIX: encuadrar las zonas pintadas. Sin esto, el mapa queda en zoom 9
+    // y las zonas (que están cerca de -9.55, -77.05) quedan casi invisibles.
+    if (pintadas > 0) {
+        try {
+            const todasLasCoords = [];
+            for (const [, entry] of poligonosActivos.entries()) {
+                if (entry.poligono && typeof entry.poligono.getLatLngs === "function") {
+                    const latlngs = entry.poligono.getLatLngs();
+                    const flat = (arr) => {
+                        for (const item of arr) {
+                            if (Array.isArray(item)) flat(item);
+                            else todasLasCoords.push(item);
+                        }
+                    };
+                    flat(latlngs);
+                }
+            }
+            if (todasLasCoords.length > 0) {
+                const bounds = L.latLngBounds(todasLasCoords);
+                map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
+                console.log(`[map] fitBounds a ${todasLasCoords.length} puntos de las ${pintadas} zonas`);
+            }
+        } catch (e) {
+            console.warn("map.js: error en fitBounds de zonas:", e);
+        }
+    }
+
     console.log(`[map] (${APP_CONFIG.modo}) ${pintadas} zonas pintadas en verde #22c55e`);
 }
