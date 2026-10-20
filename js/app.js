@@ -1,9 +1,11 @@
 //======================================================
 // Buscador Lugares Antamina 2026
 // Archivo principal
+// v3: lee window.__APP_CONFIG__ para diferenciar index.html
+//     (modo manual) de keraunos.html (modo scraper).
 //======================================================
 
-import { cargarLugares, obtenerCarpetas } from "./data.js";   // ⬅️ CORREGIDO
+import { cargarLugares } from "./data.js";
 import { crearBuscador, teclado } from "./search.js";
 import { crearMapa } from "./map.js";
 import { inicializarFirebase } from "./notifications.js";
@@ -11,19 +13,30 @@ import { escucharMensajesPush } from "./mensajes.js";
 import { mostrarAlertaCompleta, cerrarAlertaTotal, mostrarAlertaLibre } from "./alertas.js";
 import { iniciarEstadoCliente } from "./estado-cliente.js";
 
+// Leer configuración (o defaults si no existe)
+const CONFIG = window.__APP_CONFIG__ || {
+    modo: "manual",
+    zonasFile: "./zonas.json",
+    origenFiltro: "manual",
+    usarFirestore: true,
+    usarEstadoJSON: false
+};
+
+console.log(`[app] modo: ${CONFIG.modo} | zonas: ${CONFIG.zonasFile} | filtro: ${CONFIG.origenFiltro}`);
+
 //======================================================
 // Referencias HTML
 //======================================================
 
-const input   = document.getElementById("search");
-const stats   = document.getElementById("stats");
+const input = document.getElementById("search");
+const stats = document.getElementById("stats");
 const results = document.getElementById("results");
 
 //======================================================
 
 let lugares = [];
-let buscar  = null;
-let mapa    = null;
+let buscar = null;
+let mapa = null;
 
 //======================================================
 // Inicio
@@ -45,30 +58,35 @@ async function iniciar() {
 
         stats.textContent = `${lugares.length} lugares cargados`;
 
-        // ⬅️ NUEVO: activar filtros de carpeta + tipo
-        inicializarFiltros(lugares, mapa);
+        // Firestore: solo si la config lo pide
+        if (CONFIG.usarFirestore) {
+            escucharMensajesPush();
+            inicializarFirebase().catch(err => console.warn("Firebase:", err.message));
+        }
 
-        // Escuchar mensajes push en tiempo real (Firestore).
-        escucharMensajesPush();
+        // estado.json: solo si la config lo pide
+        if (CONFIG.usarEstadoJSON) {
+            try {
+                iniciarEstadoCliente({ modo: "index" });
+            } catch (e) {
+                console.warn("estado-cliente no arrancó:", e);
+            }
+        }
 
-        // Habilitar Firebase Messaging
-        inicializarFirebase().catch(err => console.warn("Firebase:", err.message));
-
-        // Respaldo del cliente Keraunos
+        // Pintar las zonas base según el modo
         try {
-            iniciarEstadoCliente({ modo: "index" });
+            const mod = await import("./map.js");
+            if (mod && typeof mod.pintarZonasBaseVerde === "function") {
+                await mod.pintarZonasBaseVerde();
+            }
         } catch (e) {
-            console.warn("estado-cliente (index) no arrancó:", e);
+            console.warn("No se pudieron pintar las zonas base:", e);
         }
 
     } catch (error) {
-
         console.error(error);
-
-        stats.textContent = "Error cargando lugares";
-
+        stats.textContent = "Error cargando lugares.json";
     }
-
 }
 
 //======================================================
@@ -83,13 +101,9 @@ input.addEventListener("keydown", controlarTeclado);
 //======================================================
 
 function buscarTexto() {
-
     const texto = input.value.trim();
-
     cambiarColorFondo(texto);
-
     buscar(texto, results, mapa, stats);
-
 }
 
 //======================================================
@@ -105,15 +119,12 @@ function controlarTeclado(e) {
 //======================================================
 
 function cambiarColorFondo(texto) {
-
     if (texto.length === 0) {
         document.body.style.backgroundColor = "#2c3e50";
         return;
     }
-
     const tono = (texto.length * 18) % 360;
     document.body.style.backgroundColor = `hsl(${tono},45%,30%)`;
-
 }
 
 //======================================================
@@ -121,14 +132,9 @@ function cambiarColorFondo(texto) {
 //======================================================
 
 function configurarBotonConsulta() {
-
     const btn = document.getElementById("btn-test-alerta");
     if (!btn) return;
-
-    btn.addEventListener("click", () => {
-        consultarEstadoAlerta();
-    });
-
+    btn.addEventListener("click", () => consultarEstadoAlerta());
 }
 
 async function consultarEstadoAlerta() {
@@ -170,7 +176,8 @@ async function consultarEstadoAlerta() {
                             timestampInicio: timestampInicio,
                             sectorOriginal:  data.sectorOriginal || null,
                             inicio:          data.inicio || null,
-                            fin:             data.fin || null
+                            fin:             data.fin || null,
+                            origen:          data.origen || null
                         });
                         return;
                     }
@@ -187,7 +194,8 @@ async function consultarEstadoAlerta() {
                         timestampInicio: fechaDoc,
                         sectorOriginal:  data.sectorOriginal || null,
                         inicio:          data.inicio || null,
-                        fin:             data.fin || null
+                        fin:             data.fin || null,
+                        origen:          data.origen || null
                     });
                     return;
                 }
@@ -204,71 +212,6 @@ async function consultarEstadoAlerta() {
 
 configurarBotonConsulta();
 
-//======================================================
-// ⬅️ NUEVO: Filtros de carpeta + tipo
-//======================================================
-
-function inicializarFiltros(lugares, mapa) {
-    const selectCarpeta = document.getElementById("folder-select");
-    const botonesTipo   = document.querySelectorAll(".type-btn");
-
-    if (!selectCarpeta) {
-        console.warn("app.js: no existe #folder-select");
-        return;
-    }
-    if (!mapa || typeof mapa.filtrarLugares !== "function") {
-        console.warn("app.js: mapa.filtrarLugares no disponible");
-        return;
-    }
-
-    const carpetas = obtenerCarpetas(lugares);
-    console.info(`app.js: ${carpetas.length} carpetas detectadas`, carpetas);
-
-    selectCarpeta.innerHTML =
-        `<option value="__all__">📁 Todas las carpetas</option>` +
-        carpetas.map(c =>
-            `<option value="${escapeHtml(c)}">📁 ${escapeHtml(c)}</option>`
-        ).join("");
-
-    let filtroCarpeta = "__all__";
-    let filtroTipo    = "all";
-
-    function aplicar() {
-        const visibles = mapa.filtrarLugares(props => {
-            const okCarpeta =
-                filtroCarpeta === "__all__" ||
-                (props.carpeta || "(Raíz)") === filtroCarpeta;
-            const okTipo =
-                filtroTipo === "all" ||
-                props.tipo === filtroTipo;
-            return okCarpeta && okTipo;
-        });
-        document.getElementById("stats").textContent = `${visibles} lugares visibles`;
-    }
-
-    selectCarpeta.addEventListener("change", e => {
-        filtroCarpeta = e.target.value;
-        aplicar();
-    });
-
-    botonesTipo.forEach(btn => {
-        btn.addEventListener("click", () => {
-            botonesTipo.forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            filtroTipo = btn.dataset.type;
-            aplicar();
-        });
-    });
-}
-
-function escapeHtml(str) {
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-}
 //======================================================
 
 iniciar();
