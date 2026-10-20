@@ -1,13 +1,13 @@
 // js/estado-cliente.js
 // ============================================================
-// Puente estado.json ↔ sistema de alertas (v7)
-// v7:
-//   - Lee el flag modo desde `mensajes.js` (estadoModo).
-//   - En modo admin: NO reenvía alertas del scraper cuando el
-//     modo manual está activo.
-//   - En modo index: NO procesa estado.json cuando el modo manual
-//     está activo.
-//   - Marca arranque listo para la barrera de alertas.js.
+// Puente estado.json ↔ sistema de alertas (v8)
+// ------------------------------------------------------------
+// v8:
+//   - Solo arranca si APP_CONFIG.usarEstadoJSON === true
+//     (keraunos.html sí, index.html no).
+//   - Filtra alertas por origen: solo procesa las del scraper
+//     (origen !== "manual").
+//   - Modo "admin" ya NO se usa (admin no reenvía scraper).
 // ============================================================
 
 import { mostrarAlertaCompleta, mostrarAlertaLibre, quitarAlerta, marcarArranqueListo } from "./alertas.js";
@@ -27,12 +27,22 @@ const cliente = {
 
 let primeraCarga = true;
 
+function obtenerConfig() {
+    return window.__APP_CONFIG__ || {
+        usarEstadoJSON: true,
+        origenFiltro: "scraper"
+    };
+}
+
 function cargarHistorial() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return { historial: {}, zonas: [] };
         const parsed = JSON.parse(raw);
-        return { historial: parsed.historial || {}, zonas: parsed.zonas || [] };
+        return {
+            historial: parsed.historial || {},
+            zonas: parsed.zonas || []
+        };
     } catch { return { historial: {}, zonas: [] }; }
 }
 
@@ -52,26 +62,15 @@ function guardarHistorial(historial, zonas) {
     } catch {}
 }
 
-function claveAlerta(a) { return `${a.distrito}::${a.timestampInicio}`; }
+function claveAlerta(a) {
+    return `${a.distrito}::${a.timestampInicio}`;
+}
 
 async function leerEstado() {
     const url = `${ESTADO_URL}?t=${Date.now()}`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     return res.json();
-}
-
-// Chequea si el modo manual está activo consultando mensajes.js
-async function modoManualActivo() {
-    try {
-        const { estadoModo } = await import("./mensajes.js");
-        if (!estadoModo || !estadoModo.cargado) return false;
-        if (estadoModo.modo !== "manual") return false;
-        if (estadoModo.expiraEn && estadoModo.expiraEn < Date.now()) return false;
-        return true;
-    } catch (e) {
-        return false;
-    }
 }
 
 async function enviarAlertaFirestore(alerta) {
@@ -90,17 +89,7 @@ async function enviarAlertaFirestore(alerta) {
             sectorOriginal: alerta.sectorOriginal,
             inicio: alerta.inicio,
             fin: alerta.fin
-            // Sin `origen` → será tratado como no-manual.
         }
-    );
-}
-
-async function enviarResolucionFirestore(distrito) {
-    const { enviarMensajePush } = await import("./mensajes.js");
-    await enviarMensajePush(
-        `✅ Alerta finalizada — ${distrito}`,
-        `La alerta meteorológica en ${distrito} ha finalizado.`,
-        { tipo: "alerta-resuelta", distrito }
     );
 }
 
@@ -117,25 +106,21 @@ async function ciclo() {
         return;
     }
 
-    // Si modo manual está activo, ignorar estado.json (scraper)
-    if (cliente.modo === "index" && await modoManualActivo()) {
-        console.log("[estado-cliente] modo manual activo → ignorando estado.json");
-        if (primeraCarga) {
-            primeraCarga = false;
-            marcarArranqueListo("estado-cliente");
-        }
-        return;
-    }
-
     const alertas = Array.isArray(data.alertas) ? data.alertas : [];
     const { historial, zonas } = cargarHistorial();
     const zonasVistas = new Set(zonas);
     const distritosActuales = new Set();
-    const modoManual = cliente.modo === "admin" && await modoManualActivo();
 
+    // FASE 1 — Procesar alertas del scraper
     for (const a of alertas) {
         if (a.nivel !== "amarilla" && a.nivel !== "naranja" && a.nivel !== "roja") continue;
         if (!a.distrito) continue;
+
+        // Filtro: en estado.json solo vienen del scraper.
+        // Si por error trae origen === "manual", se ignora.
+        const origenAlerta = a.origen || "keraunos";
+        if (origenAlerta === "manual") continue;
+
         distritosActuales.add(a.distrito);
 
         const clave = claveAlerta(a);
@@ -154,42 +139,30 @@ async function ciclo() {
             };
             zonasVistas.add(a.distrito);
 
-            if (cliente.modo === "admin") {
-                // En modo manual, NO reenviar scraper a Firestore
-                if (modoManual) {
-                    console.log(`[estado-cliente/admin] modo manual activo → NO reenviar ${a.distrito}`);
-                    continue;
-                }
-                try {
-                    await enviarAlertaFirestore(a);
-                    try {
-                        const { mostrarToast } = await import("./notifications.js");
-                        mostrarToast("🤖 Alerta automática enviada",
-                            `${a.distrito} · ${a.nivel.toUpperCase()}`, "exito", false);
-                    } catch {}
-                } catch (e) { console.error("estado-cliente: error Firestore:", e); }
-            } else if (cliente.modo === "index") {
-                try {
-                    await mostrarAlertaCompleta({
-                        tipo: "alerta",
-                        nivel: a.nivel,
-                        titulo: a.titulo,
-                        mensaje: a.mensaje,
-                        distrito: a.distrito,
-                        lat: a.lat,
-                        lng: a.lng,
-                        duracionMin: a.duracionMin,
-                        timestampInicio: a.timestampInicio,
-                        sectorOriginal: a.sectorOriginal,
-                        inicio: a.inicio,
-                        fin: a.fin,
-                        origen: a.origen || null
-                    });
-                } catch (e) { console.error("estado-cliente: error mostrando alerta:", e); }
+            // En keraunos.html solo mostramos directo (no Firestore)
+            try {
+                await mostrarAlertaCompleta({
+                    tipo:            "alerta",
+                    nivel:           a.nivel,
+                    titulo:          a.titulo,
+                    mensaje:         a.mensaje,
+                    distrito:        a.distrito,
+                    lat:             a.lat,
+                    lng:             a.lng,
+                    duracionMin:     a.duracionMin,
+                    timestampInicio: a.timestampInicio,
+                    sectorOriginal:  a.sectorOriginal,
+                    inicio:          a.inicio,
+                    fin:             a.fin,
+                    origen:          "scraper"
+                });
+            } catch (e) {
+                console.error("estado-cliente: error mostrando alerta:", e);
             }
         }
     }
 
+    // FASE 2 — Alertas resueltas
     const distritosResueltos = [];
     for (const d of zonasVistas) {
         if (!distritosActuales.has(d)) distritosResueltos.push(d);
@@ -197,19 +170,14 @@ async function ciclo() {
 
     for (const distrito of distritosResueltos) {
         zonasVistas.delete(distrito);
-        if (cliente.modo === "admin") {
-            if (modoManual) continue;
-            try {
-                await enviarResolucionFirestore(distrito);
-                try {
-                    const { mostrarToast } = await import("./notifications.js");
-                    mostrarToast("✅ Alerta finalizada", distrito, "info", false);
-                } catch {}
-            } catch (e) { console.error("estado-cliente: error resolución:", e); }
-        } else if (cliente.modo === "index") {
-            try { await quitarAlerta(distrito); }
-            catch (e) { console.error("estado-cliente: error quitando:", e); }
-        }
+        try { await quitarAlerta(distrito); }
+        catch (e) { console.error("estado-cliente: error quitando:", e); }
+    }
+
+    // FASE 3 — Si no hay zonas activas, mostrar libre
+    if (distritosActuales.size === 0 && zonasVistas.size === 0 && !cliente.cargado) {
+        try { await mostrarAlertaLibre(); } catch {}
+        cliente.cargado = true;
     }
 
     if (primeraCarga) {
@@ -222,6 +190,15 @@ async function ciclo() {
 
 export function iniciarEstadoCliente(opciones = {}) {
     if (cliente.intervaloId !== null) return;
+
+    const cfg = obtenerConfig();
+
+    // Solo arrancar si la página lo pide (keraunos.html)
+    if (!cfg.usarEstadoJSON) {
+        console.log("[estado-cliente] desactivado en esta página (usarEstadoJSON=false)");
+        marcarArranqueListo("estado-cliente");  // liberar barrera
+        return;
+    }
 
     cliente.modo = opciones.modo || "index";
     console.log(`estado-cliente: iniciado en modo "${cliente.modo}" (${INTERVALO_MS / 1000}s)`);
