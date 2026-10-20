@@ -901,3 +901,30 @@
     }
     #al-overlay.al-visible .al-panel { margin-top: 20px; }
 }
+/* ============================================================
+   ETIQUETA PERMANENTE DE LOS PUNTOS DE ZONA
+   (nombre corto siempre visible, 8px, azul)
+   ============================================================ */
+.leaflet-tooltip.label-punto-mapa {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #1a73e8 !important; /* Azul Google Maps */
+    font-size: 8px !important;
+    font-weight: 800 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    text-shadow: 
+        -1px -1px 0 #fff,  
+         1px -1px 0 #fff,
+        -1px  1px 0 #fff,
+         1px  1px 0 #fff; /* Borde blanco para que se lea sobre el satélite */
+    padding: 0 !important;
+    white-space: nowrap;
+    pointer-events: none; /* No bloquea los clics al mapa */
+}
+
+/* Ocultar la flechita del tooltip por defecto de Leaflet */
+.leaflet-tooltip.label-punto-mapa::before {
+    display: none;
+}
