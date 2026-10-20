@@ -1,11 +1,11 @@
 // js/mensajes.js
 //
 // Sistema de mensajes en tiempo real usando Firebase Firestore.
-// v4: lee el flag `sistema/estado_modo` y lo pasa a `alertas.js`.
-//     - Cuando modo === "manual", index.html NO muestra alertas
-//       del scraper y las manuales degradan.
-//     - Cuando modo === "automatico" o el flag expiró, comportamiento
-//       clásico: todas las alertas se muestran, ninguna degrada.
+// v5:
+//   - Lee window.__APP_CONFIG__.usarFirestore (index: true, keraunos: false).
+//   - Filtra por origen según APP_CONFIG.origenFiltro ("manual" | "scraper").
+//   - index.html: solo procesa origen === "manual".
+//   - keraunos.html: NO usa Firestore (usa estado.json).
 // ============================================================
 
 import {
@@ -28,7 +28,7 @@ let primeraCarga = true;
 
 const docsProcesados = new Set();
 
-// Estado local del modo (manual / automatico) leído de Firestore
+// Estado local del modo manual (leído de Firestore)
 export const estadoModo = {
     modo: "automatico",
     zonasActivas: [],
@@ -41,12 +41,42 @@ function obtenerDB() {
     return db;
 }
 
-// ----------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------
+function obtenerConfig() {
+    return window.__APP_CONFIG__ || {
+        origenFiltro: "manual",
+        usarFirestore: true
+    };
+}
+
 function modoEstaActivo() {
     if (estadoModo.modo !== "manual") return false;
     if (estadoModo.expiraEn && estadoModo.expiraEn < Date.now()) return false;
+    return true;
+}
+
+// ----------------------------------------------------------
+// Filtro por origen
+// ----------------------------------------------------------
+// Devuelve true si el doc debe procesarse en esta página.
+// - "manual": solo docs con origen === "manual".
+// - "scraper": solo docs con origen !== "manual".
+// ----------------------------------------------------------
+function debeProcesar(data) {
+    const cfg = obtenerConfig();
+    const esAlerta = data.tipo === "alerta" ||
+        (data.nivel && data.nivel !== "normal" && data.nivel !== "vigilancia");
+    const esResuelta = data.tipo === "alerta-resuelta";
+    const esNormal = !esAlerta && !esResuelta;
+
+    // Los mensajes normales (no alerta) siempre se procesan
+    if (esNormal) return true;
+
+    if (cfg.origenFiltro === "manual") {
+        return data.origen === "manual";
+    }
+    if (cfg.origenFiltro === "scraper") {
+        return data.origen !== "manual";
+    }
     return true;
 }
 
@@ -72,7 +102,7 @@ export async function enviarMensajePush(titulo, cuerpo, datosAlerta = null) {
 }
 
 // ----------------------------------------------------------
-// Listener del flag de modo
+// Listener del flag de modo (manual / automatico)
 // ----------------------------------------------------------
 function escucharModo() {
     try {
@@ -85,7 +115,6 @@ function escucharModo() {
                 estadoModo.zonasActivas = [];
                 estadoModo.expiraEn = 0;
                 estadoModo.cargado = true;
-                console.log("[mensajes] modo: automatico (doc no existe)");
                 return;
             }
             const data = snap.data() || {};
@@ -95,7 +124,7 @@ function escucharModo() {
                 ? data.expiraEn.toMillis()
                 : (data.expiraEn || 0);
             estadoModo.cargado = true;
-            console.log("[mensajes] modo actualizado:", estadoModo.modo, "expiraEn:", estadoModo.expiraEn ? new Date(estadoModo.expiraEn).toISOString() : "—");
+            console.log("[mensajes] modo actualizado:", estadoModo.modo);
         }, (err) => {
             console.warn("[mensajes] error leyendo modo:", err);
             estadoModo.modo = "automatico";
@@ -113,7 +142,15 @@ export function escucharMensajesPush() {
     if (yaEscuchando) return;
     yaEscuchando = true;
 
-    // Escuchar también el flag de modo
+    const cfg = obtenerConfig();
+
+    // Si la config dice "no usar Firestore" (keraunos.html), salir temprano.
+    if (!cfg.usarFirestore) {
+        console.log("[mensajes] Firestore desactivado en esta página (keraunos.html)");
+        marcarArranqueListo("firestore"); // liberar barrera
+        return;
+    }
+
     escucharModo();
 
     try {
@@ -125,7 +162,6 @@ export function escucharMensajesPush() {
             if (primeraCarga) {
                 primeraCarga = false;
                 procesarPrimeraCarga(snapshot);
-                // Marcar arranque listo (barrera de alertas.js)
                 marcarArranqueListo("firestore");
                 return;
             }
@@ -159,7 +195,6 @@ function procesarPrimeraCarga(snapshot) {
     const estadoPorZona = new Map();
     const mensajesNormales = [];
     const ahora = Date.now();
-    const modoManual = modoEstaActivo();
 
     for (const { data } of docs) {
         const esResuelta = data.tipo === "alerta-resuelta";
@@ -167,16 +202,15 @@ function procesarPrimeraCarga(snapshot) {
             (data.nivel && data.nivel !== "normal" && data.nivel !== "vigilancia");
         const esNormal = !esResuelta && !esAlerta;
 
-        // En modo manual, ignorar alertas del scraper (origen null)
-        if (modoManual && esAlerta && data.origen !== "manual") continue;
-
         if (esResuelta) {
+            if (!debeProcesar(data)) continue;
             const distrito = data.distrito || "";
             if (distrito) estadoPorZona.set(distrito, { tipo: "resuelta", data });
             continue;
         }
 
         if (esAlerta) {
+            if (!debeProcesar(data)) continue;
             const distrito = data.distrito || "";
             if (!distrito) continue;
 
@@ -204,9 +238,6 @@ function procesarPrimeraCarga(snapshot) {
     }
 
     if (zonasActivas.length === 0) {
-        // No hay alertas en Firestore. La decisión de mostrar libre
-        // la toma la barrera de arranque en alertas.js cuando TODAS
-        // las fuentes hayan terminado. Aquí solo marcamos listo.
         if (mensajesNormales.length > 0) {
             setTimeout(() => {
                 mensajesNormales.slice(0, 3).forEach(m => {
@@ -226,6 +257,8 @@ function procesarPrimeraCarga(snapshot) {
 // Nuevo documento
 // ----------------------------------------------------------
 function procesarDocumentoNuevo(data) {
+    if (!debeProcesar(data)) return;
+
     const titulo = data.titulo || "🔔 Notificación";
     const cuerpo = data.cuerpo || "";
 
