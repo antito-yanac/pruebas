@@ -1,7 +1,9 @@
 // js/map.js
 // ============================================================
 //  Mapa Leaflet — Antamina
-//  v10: fillOpacity de alertas bajado a 0.35 (era 0.5).
+//  v11: lee window.__APP_CONFIG__.zonasFile (zonas.json o zonas2.json).
+//       En modo "manual" pinta 3 zonas (Tajo oculta).
+//       En modo "keraunos" pinta las 4 zonas.
 // ============================================================
 
 let map;
@@ -16,18 +18,27 @@ let circleAccuracy   = null;
 let watchId          = null;
 let iconoTu          = null;
 
-const ZONAS_OCULTAS = ["Zona 4 - Tajo"];
+// Configuración (o defaults)
+const APP_CONFIG = window.__APP_CONFIG__ || {
+    modo: "manual",
+    zonasFile: "./zonas.json"
+};
 
-function esZonaOculta(nombreZona) {
+// Zonas ocultas SOLO en modo manual
+const ZONAS_OCULTAS_MANUAL = ["Zona 4 - Tajo"];
+
+function esZonaOcultaManual(nombreZona) {
+    if (APP_CONFIG.modo !== "manual") return false;
     if (!nombreZona) return false;
     const n = String(nombreZona).toLowerCase();
-    return ZONAS_OCULTAS.some(oc =>
+    return ZONAS_OCULTAS_MANUAL.some(oc =>
         oc.toLowerCase() === n ||
         n.includes(oc.toLowerCase()) ||
         oc.toLowerCase().includes(n)
     );
 }
 
+// Paleta
 const VERDE_BASE = "#22c55e";
 
 const COLORES_NIVEL = {
@@ -51,11 +62,12 @@ let _estiloGlowInyectado = false;
 async function cargarZonas() {
     if (zonasData) return zonasData;
     try {
-        const resp = await fetch("./zonas.json");
+        const resp = await fetch(APP_CONFIG.zonasFile);
         zonasData = await resp.json();
+        console.log(`[map] zonas cargadas desde ${APP_CONFIG.zonasFile}:`, zonasData.zonas?.length || 0);
         return zonasData;
     } catch (e) {
-        console.warn("map.js: no se pudo cargar zonas.json", e);
+        console.warn(`map.js: no se pudo cargar ${APP_CONFIG.zonasFile}`, e);
         return null;
     }
 }
@@ -497,9 +509,6 @@ function irA(lugar) {
     });
 }
 
-// ----------------------------------------------------------
-// PINTAR POLÍGONO DE ZONA — v10 con fillOpacity 0.35
-// ----------------------------------------------------------
 export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKey = null) {
     if (!map) return null;
 
@@ -532,7 +541,6 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKe
 
     const tieneAlerta = nivelKey !== "vigilancia";
     const colorFinal = tieneAlerta ? colorDeNivel(nivelKey) : VERDE_BASE;
-    // v10: fillOpacity de alertas bajado de 0.5 a 0.35 (menos intenso, deja ver el mapa)
     const fillOp = tieneAlerta ? 0.35 : 0.20;
 
     const poligono = L.polygon(latlngs, {
@@ -597,24 +605,22 @@ export function obtenerPoligonosActivos() {
 }
 
 export function esZonaOcultaExport(nombreZona) {
-    return esZonaOculta(nombreZona);
+    return esZonaOcultaManual(nombreZona);
 }
 
-// ----------------------------------------------------------
-// PINTAR ZONAS BASE VERDE
-// ----------------------------------------------------------
 export async function pintarZonasBaseVerde() {
     if (!map) return;
 
     const data = await cargarZonas();
     if (!data || !data.zonas) {
-        console.warn("map.js: no se pudo cargar zonas.json para pintar zonas base");
+        console.warn(`map.js: no se pudo cargar ${APP_CONFIG.zonasFile} para pintar zonas base`);
         return;
     }
 
     let pintadas = 0;
     for (const zona of data.zonas) {
-        if (esZonaOculta(zona.nombre)) continue;
+        // En modo manual, ocultar Tajo. En modo keraunos, pintar todas.
+        if (esZonaOcultaManual(zona.nombre)) continue;
         try {
             await pintarPoligonoZona(zona.nombre, VERDE_BASE, "vigilancia");
             pintadas++;
@@ -622,5 +628,5 @@ export async function pintarZonasBaseVerde() {
             console.warn("map.js: error pintando zona base:", zona.nombre, e);
         }
     }
-    console.log(`[map] ${pintadas} zonas pintadas en verde #22c55e`);
+    console.log(`[map] (${APP_CONFIG.modo}) ${pintadas} zonas pintadas en verde #22c55e`);
 }
