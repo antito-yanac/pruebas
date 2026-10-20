@@ -1,632 +1,261 @@
-// js/map.js
-// ============================================================
-//  Mapa Leaflet — Antamina
-//  v11: lee window.__APP_CONFIG__.zonasFile (zonas.json o zonas2.json).
-//       En modo "manual" pinta 3 zonas (Tajo oculta).
-//       En modo "keraunos" pinta las 4 zonas.
-// ============================================================
+//======================================================
+// Buscador Lugares Antamina 2026
+// Archivo principal
+// v4: en modo "keraunos" (keraunos.html) NO carga lugares.json
+//     ni el buscador. Solo crea el mapa, pinta zonas2.json y
+//     arranca estado-cliente para leer estado.json.
+//======================================================
 
-let map;
-let geoLayer;
-let markerSeleccionado = null;
+import { cargarLugares } from "./data.js";
+import { crearBuscador, teclado } from "./search.js";
+import { crearMapa } from "./map.js";
+import { inicializarFirebase } from "./notifications.js";
+import { escucharMensajesPush } from "./mensajes.js";
+import { mostrarAlertaCompleta, cerrarAlertaTotal, mostrarAlertaLibre } from "./alertas.js";
+import { iniciarEstadoCliente } from "./estado-cliente.js";
 
-const MAPTILER_KEY = "j4zAW83dNrfEbSRUvYN0";
-const MAP_STYLE    = "hybrid-v4";
-
-let markerUbicacion  = null;
-let circleAccuracy   = null;
-let watchId          = null;
-let iconoTu          = null;
-
-// Configuración (o defaults)
-const APP_CONFIG = window.__APP_CONFIG__ || {
+// Leer configuración (o defaults si no existe)
+const CONFIG = window.__APP_CONFIG__ || {
     modo: "manual",
-    zonasFile: "./zonas.json"
+    zonasFile: "./zonas.json",
+    origenFiltro: "manual",
+    usarFirestore: true,
+    usarEstadoJSON: false
 };
 
-// Zonas ocultas SOLO en modo manual
-const ZONAS_OCULTAS_MANUAL = ["Zona 4 - Tajo"];
+console.log(`[app] modo: ${CONFIG.modo} | zonas: ${CONFIG.zonasFile} | filtro: ${CONFIG.origenFiltro}`);
 
-function esZonaOcultaManual(nombreZona) {
-    if (APP_CONFIG.modo !== "manual") return false;
-    if (!nombreZona) return false;
-    const n = String(nombreZona).toLowerCase();
-    return ZONAS_OCULTAS_MANUAL.some(oc =>
-        oc.toLowerCase() === n ||
-        n.includes(oc.toLowerCase()) ||
-        oc.toLowerCase().includes(n)
-    );
-}
+//======================================================
+// Referencias HTML
+//======================================================
 
-// Paleta
-const VERDE_BASE = "#22c55e";
+const input = document.getElementById("search");
+const stats = document.getElementById("stats");
+const results = document.getElementById("results");
 
-const COLORES_NIVEL = {
-    vigilancia: VERDE_BASE,
-    amarilla:   "#f1c40f",
-    naranja:    "#e67e22",
-    roja:       "#e74c3c",
-    precaucion: "#f1c40f",
-    alerta:     "#e67e22",
-    emergencia: "#e74c3c"
-};
+//======================================================
 
-function colorDeNivel(nivelKey) {
-    return COLORES_NIVEL[nivelKey] || COLORES_NIVEL.roja;
-}
+let lugares = [];
+let buscar = null;
+let mapa = null;
 
-const poligonosActivos = new Map();
-let zonasData = null;
-let _estiloGlowInyectado = false;
+//======================================================
+// Inicio
+//======================================================
 
-async function cargarZonas() {
-    if (zonasData) return zonasData;
+async function iniciar() {
+
     try {
-        const resp = await fetch(APP_CONFIG.zonasFile);
-        zonasData = await resp.json();
-        console.log(`[map] zonas cargadas desde ${APP_CONFIG.zonasFile}:`, zonasData.zonas?.length || 0);
-        return zonasData;
-    } catch (e) {
-        console.warn(`map.js: no se pudo cargar ${APP_CONFIG.zonasFile}`, e);
-        return null;
-    }
-}
 
-function inyectarEstiloGlow() {
-    if (_estiloGlowInyectado) return;
-    _estiloGlowInyectado = true;
+        // ==================================================
+        // MODO KERAUNOS (keraunos.html)
+        // - Sin buscador, sin lugares.json
+        // - Solo mapa + zonas2.json + estado.json
+        // ==================================================
+        if (CONFIG.modo === "keraunos") {
+            console.log("[app] modo keraunos: sin buscador ni lugares.json");
 
-    const style = document.createElement("style");
-    style.id = "al-zona-glow-style";
-    style.textContent = `
-        @keyframes al-zona-glow-pulso {
-            0%   { filter: drop-shadow(0 0 3px  currentColor) drop-shadow(0 0 6px  currentColor); }
-            50%  { filter: drop-shadow(0 0 12px currentColor) drop-shadow(0 0 22px currentColor); }
-            100% { filter: drop-shadow(0 0 3px  currentColor) drop-shadow(0 0 6px  currentColor); }
-        }
-        .al-zona-glow {
-            animation: al-zona-glow-pulso 1.6s ease-in-out infinite;
-        }
-        .al-zona-sin-glow {
-            filter: none;
-        }
-    `;
-    document.head.appendChild(style);
-}
+            // Ocultar el buscador y stats (por si acaso el HTML los tiene)
+            if (input) input.closest(".search-box")?.style.setProperty("display", "none");
+            if (results) results.style.setProperty("display", "none");
+            if (stats) stats.style.setProperty("display", "none");
 
-function aplicarGlowPulsante(poligono, nivelKey) {
-    try {
-        const el = poligono.getElement();
-        if (!el) return;
-        const color = colorDeNivel(nivelKey);
-        el.classList.remove("al-zona-sin-glow");
-        el.classList.add("al-zona-glow");
-        el.style.color = color;
-    } catch (e) {
-        console.warn("map.js: error aplicando glow:", e);
-    }
-}
+            mapa = crearMapa("map");
 
-function quitarGlow(poligono) {
-    try {
-        const el = poligono.getElement();
-        if (!el) return;
-        el.classList.remove("al-zona-glow");
-        el.classList.add("al-zona-sin-glow");
-        el.style.color = "";
-    } catch (e) {}
-}
-
-export function iluminarDistrito(lat, lng, nivelKey = "roja") {
-    if (!map) return null;
-
-    const color = colorDeNivel(nivelKey);
-
-    const nucleo = L.circleMarker([lat, lng], {
-        radius: 10, color: "#fff", weight: 2,
-        fillColor: color, fillOpacity: 0.95
-    }).addTo(map);
-
-    const rayoIcon = L.divIcon({
-        className: "al-mapa-rayo",
-        html: `<svg class="al-mapa-rayo-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                 <polygon points="58,5 30,52 48,52 38,95 72,42 52,42 62,5"
-                          fill="#ffeb3b" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
-               </svg>`,
-        iconSize: [50, 50], iconAnchor: [25, 25]
-    });
-    const rayoMarker = L.marker([lat, lng], {
-        icon: rayoIcon, zIndexOffset: 2000
-    }).addTo(map);
-
-    const pulsoIcon = L.divIcon({
-        className: "",
-        html: `<div style="width:40px;height:40px;border-radius:50%;
-                 border:3px solid ${color};position:relative;
-                 animation:al-radar-pulso 2s ease-out infinite;"></div>`,
-        iconSize: [40, 40], iconAnchor: [20, 20]
-    });
-    const pulsoMarker = L.marker([lat, lng], { icon: pulsoIcon, zIndexOffset: 1900 }).addTo(map);
-
-    nucleo.bindPopup(
-        `<b>⚡ Zona de alerta</b><br>` +
-        `Actividad eléctrica detectada<br>` +
-        `Lat: ${lat.toFixed(5)}<br>Lng: ${lng.toFixed(5)}`
-    );
-
-    let pulsoVisible = true;
-    const intervalParpadeo = setInterval(() => {
-        pulsoVisible = !pulsoVisible;
-        const elementoPulso = pulsoMarker.getElement();
-        if (elementoPulso) elementoPulso.style.opacity = pulsoVisible ? "1" : "0.35";
-        if (nucleo) nucleo.setStyle({ fillOpacity: pulsoVisible ? 0.95 : 0.55 });
-    }, 700);
-
-    map.flyTo([lat, lng], 12, { duration: 1.4 });
-
-    return {
-        map, nucleo, rayoMarker, pulsoMarker, intervalParpadeo,
-        detener() {
-            clearInterval(intervalParpadeo);
-            try { map.removeLayer(nucleo); } catch(e){}
-            try { map.removeLayer(rayoMarker); } catch(e){}
-            try { map.removeLayer(pulsoMarker); } catch(e){}
-        }
-    };
-}
-
-export async function iluminarDistritoZona(nombreZona, nivelKey = "roja") {
-    if (!map) return null;
-
-    const color = colorDeNivel(nivelKey);
-    let puntoEncontrado = null;
-
-    const zonaLower = (nombreZona || "").toLowerCase();
-    const partes = nombreZona.split("-");
-    const nombreBusqueda = partes.length > 1
-        ? partes.slice(1).join("-").trim().toLowerCase()
-        : zonaLower;
-
-    if (geoLayer) {
-        geoLayer.eachLayer(layer => {
-            if (puntoEncontrado) return;
-            const f = layer.feature;
-            if (!f) return;
-            if (f.geometry && f.geometry.type === "Point") {
-                const nombre = (f.properties?.Name || "").toLowerCase();
-                if (nombre.includes(nombreBusqueda) || nombreBusqueda.includes(nombre)) {
-                    const coords = f.geometry.coordinates;
-                    puntoEncontrado = {
-                        lat: coords[1], lng: coords[0],
-                        nombre: f.properties?.Name || nombreZona,
-                        layer: layer
-                    };
+            // Pintar las 4 zonas de zonas2.json en verde
+            try {
+                const mod = await import("./map.js");
+                if (mod && typeof mod.pintarZonasBaseVerde === "function") {
+                    await mod.pintarZonasBaseVerde();
                 }
+            } catch (e) {
+                console.warn("[app] No se pudieron pintar las zonas base:", e);
             }
-        });
-    }
 
-    if (!puntoEncontrado) {
+            // Arrancar estado-cliente (lee estado.json cada 30 s)
+            try {
+                iniciarEstadoCliente({ modo: "index" });
+            } catch (e) {
+                console.warn("[app] estado-cliente no arrancó:", e);
+            }
+
+            // No hacer nada más. Sin buscador, sin Firestore, sin lugares.json.
+            return;
+        }
+
+        // ==================================================
+        // MODO MANUAL (index.html) — comportamiento original
+        // ==================================================
+        stats.textContent = "Cargando lugares...";
+
+        lugares = await cargarLugares();
+
+        buscar = crearBuscador(lugares);
+
+        mapa = crearMapa("map");
+
+        mapa.cargarGeoJSON(lugares);
+
+        stats.textContent = `${lugares.length} lugares cargados`;
+
+        // Firestore: solo si la config lo pide
+        if (CONFIG.usarFirestore) {
+            escucharMensajesPush();
+            inicializarFirebase().catch(err => console.warn("Firebase:", err.message));
+        }
+
+        // estado.json: solo si la config lo pide (index no lo usa)
+        if (CONFIG.usarEstadoJSON) {
+            try {
+                iniciarEstadoCliente({ modo: "index" });
+            } catch (e) {
+                console.warn("estado-cliente no arrancó:", e);
+            }
+        }
+
+        // Pintar las zonas base (zonas.json, 3 zonas en modo manual)
         try {
-            const data = await cargarZonas();
-            if (data && data.zonas) {
-                const zona = data.zonas.find(z =>
-                    z.nombre === nombreZona ||
-                    z.nombre.includes(nombreZona) ||
-                    nombreZona.includes(z.nombreCorto)
-                );
-                if (zona) {
-                    puntoEncontrado = {
-                        lat: zona.lat, lng: zona.lng,
-                        nombre: zona.nombre, layer: null
-                    };
-                }
+            const mod = await import("./map.js");
+            if (mod && typeof mod.pintarZonasBaseVerde === "function") {
+                await mod.pintarZonasBaseVerde();
             }
-        } catch (e) {}
-    }
-
-    if (!puntoEncontrado) {
-        console.warn("map.js: no se encontró punto para la zona:", nombreZona);
-        return null;
-    }
-
-    const lat = puntoEncontrado.lat;
-    const lng = puntoEncontrado.lng;
-
-    const circulo = L.circle([lat, lng], {
-        radius: 1800, color, weight: 3, opacity: 0.9,
-        fillColor: color, fillOpacity: 0.2, dashArray: "6 6"
-    }).addTo(map);
-
-    const circuloMedio = L.circle([lat, lng], {
-        radius: 900, color, weight: 2, opacity: 0.7,
-        fillColor: color, fillOpacity: 0.15
-    }).addTo(map);
-
-    const nucleo = L.circleMarker([lat, lng], {
-        radius: 10, color: "#fff", weight: 2,
-        fillColor: color, fillOpacity: 0.95
-    }).addTo(map);
-
-    const rayoIcon = L.divIcon({
-        className: "al-mapa-rayo",
-        html: `<svg class="al-mapa-rayo-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                 <polygon points="58,5 30,52 48,52 38,95 72,42 52,42 62,5"
-                          fill="#ffeb3b" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
-               </svg>`,
-        iconSize: [50, 50], iconAnchor: [25, 25]
-    });
-    const rayoMarker = L.marker([lat, lng], {
-        icon: rayoIcon, zIndexOffset: 2000
-    }).addTo(map);
-
-    const pulsoIcon = L.divIcon({
-        className: "",
-        html: `<div style="width:40px;height:40px;border-radius:50%;
-                 border:3px solid ${color};position:relative;
-                 animation:al-radar-pulso 2s ease-out infinite;"></div>`,
-        iconSize: [40, 40], iconAnchor: [20, 20]
-    });
-    const pulsoMarker = L.marker([lat, lng], { icon: pulsoIcon, zIndexOffset: 1900 }).addTo(map);
-
-    circulo.bindPopup(
-        `<b>⚡ Zona de alerta</b><br>` +
-        `Actividad eléctrica detectada<br>` +
-        `<b>${puntoEncontrado.nombre}</b><br>` +
-        `Lat: ${lat.toFixed(5)}<br>Lng: ${lng.toFixed(5)}`
-    );
-
-    let parpadeoOn = true;
-    const intervalParpadeo = setInterval(() => {
-        parpadeoOn = !parpadeoOn;
-        circulo.setStyle({ fillOpacity: parpadeoOn ? 0.35 : 0.12, opacity: parpadeoOn ? 0.9 : 0.4 });
-        circuloMedio.setStyle({ fillOpacity: parpadeoOn ? 0.25 : 0.08, opacity: parpadeoOn ? 0.7 : 0.3 });
-    }, 700);
-
-    map.flyTo([lat, lng], 12, { duration: 1.4 });
-
-    return {
-        map, circulo, circuloMedio, nucleo, rayoMarker, pulsoMarker,
-        puntoEncontrado, intervalParpadeo,
-        detener() {
-            clearInterval(intervalParpadeo);
-            try { map.removeLayer(circulo); } catch(e){}
-            try { map.removeLayer(circuloMedio); } catch(e){}
-            try { map.removeLayer(nucleo); } catch(e){}
-            try { map.removeLayer(rayoMarker); } catch(e){}
-            try { map.removeLayer(pulsoMarker); } catch(e){}
-        }
-    };
-}
-
-export function crearMapa(idDiv) {
-
-    map = L.map(idDiv, { zoomControl: false });
-    L.control.zoom({ position: "bottomright" }).addTo(map);
-
-    iconoTu = L.divIcon({
-        className: "",
-        html: '<div style="position:relative;text-align:center;">' +
-                '<div class="marker-tu"></div>' +
-                '<div class="etiqueta-tu">Tú</div>' +
-              '</div>',
-        iconSize: [22, 22], iconAnchor: [11, 11]
-    });
-
-    L.tileLayer(
-        `https://api.maptiler.com/maps/${MAP_STYLE}/{z}/{x}/{y}.jpg?key=${MAPTILER_KEY}`,
-        {
-            tileSize: 512, zoomOffset: -1, minZoom: 1,
-            attribution:
-                '<a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a> ' +
-                '<a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>',
-            crossOrigin: true
-        }
-    ).addTo(map);
-
-    map.setView([-9.50, -77.00], 9);
-
-    engancharBotonUbicacion();
-    inyectarEstiloGlow();
-
-    return { cargarGeoJSON, irA, limpiarSeleccion, filtrarLugares };
-}
-
-function engancharBotonUbicacion() {
-    const btnUbicacion = document.getElementById("btn-ubicacion");
-    if (!btnUbicacion) {
-        if (document.readyState === "loading") {
-            document.addEventListener("DOMContentLoaded", engancharBotonUbicacion);
-        } else {
-            setTimeout(engancharBotonUbicacion, 150);
-        }
-        return;
-    }
-    if (btnUbicacion.dataset.listener === "1") return;
-
-    btnUbicacion.addEventListener("click", (e) => {
-        e.preventDefault(); e.stopPropagation(); mostrarMiUbicacion();
-    });
-    btnUbicacion.addEventListener("touchend", (e) => {
-        e.preventDefault(); e.stopPropagation(); mostrarMiUbicacion();
-    }, { passive: false });
-
-    btnUbicacion.dataset.listener = "1";
-}
-
-function mostrarMiUbicacion() {
-    const btn = document.getElementById("btn-ubicacion");
-    if (!navigator.geolocation) { alert("Tu navegador no soporta geolocalización."); return; }
-    if (btn) btn.classList.add("buscar");
-
-    const options = { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 };
-
-    navigator.geolocation.getCurrentPosition(
-        (pos) => {
-            if (btn) btn.classList.remove("buscar");
-            const lat = pos.coords.latitude;
-            const lng = pos.coords.longitude;
-            const accuracy = pos.coords.accuracy;
-
-            if (markerUbicacion) map.removeLayer(markerUbicacion);
-            if (circleAccuracy) map.removeLayer(circleAccuracy);
-
-            circleAccuracy = L.circle([lat, lng], {
-                radius: accuracy, color: "#00c853", weight: 1.5,
-                opacity: 0.4, fillColor: "#00c853", fillOpacity: 0.12
-            }).addTo(map);
-
-            markerUbicacion = L.marker([lat, lng], {
-                icon: iconoTu, zIndexOffset: 1000
-            }).addTo(map);
-
-            markerUbicacion.bindPopup(
-                `<b>📍 Tu ubicación</b><br>` +
-                `Lat: ${lat.toFixed(6)}<br>` +
-                `Lng: ${lng.toFixed(6)}<br>` +
-                `Precisión: ±${Math.round(accuracy)} m`
-            ).openPopup();
-
-            let zoomLevel = 16;
-            if (accuracy > 100) zoomLevel = 14;
-            if (accuracy > 500) zoomLevel = 12;
-
-            map.flyTo([lat, lng], zoomLevel, { duration: 1.2 });
-
-            if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-            watchId = navigator.geolocation.watchPosition(
-                (pos2) => {
-                    if (markerUbicacion) {
-                        markerUbicacion.setLatLng([pos2.coords.latitude, pos2.coords.longitude]);
-                    }
-                    if (circleAccuracy) {
-                        circleAccuracy.setLatLng([pos2.coords.latitude, pos2.coords.longitude]);
-                        circleAccuracy.setRadius(pos2.coords.accuracy);
-                    }
-                },
-                () => {},
-                { enableHighAccuracy: true, maximumAge: 5000 }
-            );
-        },
-        (error) => {
-            if (btn) btn.classList.remove("buscar");
-            let mensaje = "No se pudo obtener tu ubicación.\n\n";
-            switch (error.code) {
-                case error.PERMISSION_DENIED:    mensaje += "⛔ Permiso denegado."; break;
-                case error.POSITION_UNAVAILABLE: mensaje += "📡 Posición no disponible."; break;
-                case error.TIMEOUT:              mensaje += "⏱️ Tiempo agotado."; break;
-                default:                         mensaje += "Error: " + error.message;
-            }
-            alert(mensaje);
-        },
-        options
-    );
-}
-
-function cargarGeoJSON(lugares) {
-    if (geoLayer) {
-        try { geoLayer.remove(); } catch (e) {}
-        geoLayer = null;
-    }
-
-    if (!Array.isArray(lugares) || lugares.length === 0) {
-        console.warn("map.js: cargarGeoJSON recibió 0 lugares");
-        return;
-    }
-
-    const geojson = {
-        type: "FeatureCollection",
-        features: lugares
-            .map(l => l.feature)
-            .filter(f => f && f.geometry)
-    };
-
-    if (geojson.features.length === 0) return;
-
-    try {
-        geoLayer = L.geoJSON(geojson, {
-            pointToLayer(feature, latlng) {
-                return L.circleMarker(latlng, {
-                    radius: 7, fillColor: "#4285f4", color: "#ffffff",
-                    weight: 2, opacity: 1, fillOpacity: 0.9
-                });
-            },
-            onEachFeature(feature, layer) {
-                const nombre = feature.properties?.Name || "Sin nombre";
-                layer.bindPopup(`<b>${nombre}</b><br>${feature.geometry.type}`);
-            }
-        }).addTo(map);
-
-        const bounds = geoLayer.getBounds();
-        if (bounds && bounds.isValid()) {
-            map.fitBounds(bounds, { padding: [30, 30] });
-        }
-
-    } catch (err) {
-        console.error("map.js: error creando geoLayer:", err);
-    }
-}
-
-export function filtrarLugares(predicado) {
-    if (!geoLayer || typeof predicado !== "function") return 0;
-    let visibles = 0;
-    geoLayer.eachLayer(layer => {
-        const f = layer.feature;
-        if (!f) return;
-        const props = f.properties || {};
-        const mostrar = predicado(props);
-        if (mostrar) {
-            if (!map.hasLayer(layer)) layer.addTo(map);
-            visibles++;
-        } else {
-            if (map.hasLayer(layer)) map.removeLayer(layer);
-        }
-    });
-    return visibles;
-}
-
-function limpiarSeleccion() {
-    if (markerSeleccionado) {
-        markerSeleccionado.setStyle({ fillColor: "#4285f4", radius: 7 });
-    }
-}
-
-function irA(lugar) {
-    limpiarSeleccion();
-    map.flyTo([lugar.lat, lugar.lng], 18, { duration: 1.2 });
-    map.once("moveend", () => {
-        const desplazamientoY = Math.round(map.getSize().y * 0.10);
-        map.panBy([0, desplazamientoY], { animate: true, duration: 0.5 });
-    });
-    if (!geoLayer) return;
-    geoLayer.eachLayer(layer => {
-        const f = layer.feature;
-        if (f === lugar.feature) {
-            markerSeleccionado = layer;
-            if (layer.setStyle) layer.setStyle({ radius: 11, fillColor: "#ff4444" });
-            layer.openPopup();
-        }
-    });
-}
-
-export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKey = null) {
-    if (!map) return null;
-
-    if (!nivelKey) {
-        if (color === VERDE_BASE || color === "#2ECC71" || color === "#2ecc71") nivelKey = "vigilancia";
-        else if (color === "#FFD400" || color === "#f1c40f") nivelKey = "amarilla";
-        else if (color === "#FF8C00" || color === "#e67e22") nivelKey = "naranja";
-        else if (color === "#FA5858" || color === "#e74c3c") nivelKey = "roja";
-        else nivelKey = "vigilancia";
-    }
-
-    quitarPoligonoZona(nombreZona);
-
-    const data = await cargarZonas();
-    if (!data || !data.zonas) return null;
-
-    const zona = data.zonas.find(z =>
-        z.nombre === nombreZona ||
-        z.nombreCorto === nombreZona ||
-        z.nombre.includes(nombreZona) ||
-        nombreZona.includes(z.nombreCorto)
-    );
-
-    if (!zona) {
-        console.warn("map.js: zona no encontrada:", nombreZona);
-        return null;
-    }
-
-    const latlngs = zona.poligono.map(coord => [coord[1], coord[0]]);
-
-    const tieneAlerta = nivelKey !== "vigilancia";
-    const colorFinal = tieneAlerta ? colorDeNivel(nivelKey) : VERDE_BASE;
-    const fillOp = tieneAlerta ? 0.35 : 0.20;
-
-    const poligono = L.polygon(latlngs, {
-        color: colorFinal,
-        weight: 3,
-        opacity: 1.0,
-        fillColor: colorFinal,
-        fillOpacity: fillOp,
-        dashArray: null
-    }).addTo(map);
-
-    poligono.bindPopup(
-        `<b>⚡ ${zona.nombre}</b><br>` +
-        (tieneAlerta ? `Zona bajo alerta meteorológica` : `Zona sin alerta`)
-    );
-
-    if (tieneAlerta) {
-        setTimeout(() => aplicarGlowPulsante(poligono, nivelKey), 50);
-    } else {
-        setTimeout(() => quitarGlow(poligono), 50);
-    }
-
-    poligonosActivos.set(zona.nombre, {
-        poligono,
-        color: colorFinal,
-        nivel: nivelKey,
-        zona
-    });
-
-    return {
-        zona,
-        poligono,
-        detener() { quitarPoligonoZona(zona.nombre); }
-    };
-}
-
-export function quitarPoligonoZona(nombreZona) {
-    if (!map) return false;
-
-    for (const [key, entry] of poligonosActivos.entries()) {
-        if (key === nombreZona ||
-            key.includes(nombreZona) ||
-            nombreZona.includes(key)) {
-            try { map.removeLayer(entry.poligono); } catch (e) {}
-            poligonosActivos.delete(key);
-            return true;
-        }
-    }
-    return false;
-}
-
-export function limpiarPoligonosZona() {
-    if (!map) return;
-    for (const [, entry] of poligonosActivos.entries()) {
-        try { map.removeLayer(entry.poligono); } catch (e) {}
-    }
-    poligonosActivos.clear();
-}
-
-export function obtenerPoligonosActivos() {
-    return Array.from(poligonosActivos.keys());
-}
-
-export function esZonaOcultaExport(nombreZona) {
-    return esZonaOcultaManual(nombreZona);
-}
-
-export async function pintarZonasBaseVerde() {
-    if (!map) return;
-
-    const data = await cargarZonas();
-    if (!data || !data.zonas) {
-        console.warn(`map.js: no se pudo cargar ${APP_CONFIG.zonasFile} para pintar zonas base`);
-        return;
-    }
-
-    let pintadas = 0;
-    for (const zona of data.zonas) {
-        // En modo manual, ocultar Tajo. En modo keraunos, pintar todas.
-        if (esZonaOcultaManual(zona.nombre)) continue;
-        try {
-            await pintarPoligonoZona(zona.nombre, VERDE_BASE, "vigilancia");
-            pintadas++;
         } catch (e) {
-            console.warn("map.js: error pintando zona base:", zona.nombre, e);
+            console.warn("No se pudieron pintar las zonas base:", e);
         }
+
+    } catch (error) {
+        console.error(error);
+        if (stats) stats.textContent = "Error cargando lugares.json";
     }
-    console.log(`[map] (${APP_CONFIG.modo}) ${pintadas} zonas pintadas en verde #22c55e`);
 }
+
+//======================================================
+// Eventos (solo si existen los elementos — en keraunos.html no existen)
+//======================================================
+
+if (input) {
+    input.addEventListener("input", buscarTexto);
+    input.addEventListener("keydown", controlarTeclado);
+}
+
+//======================================================
+// Buscar
+//======================================================
+
+function buscarTexto() {
+    if (!buscar || !input) return;
+    const texto = input.value.trim();
+    cambiarColorFondo(texto);
+    buscar(texto, results, mapa, stats);
+}
+
+//======================================================
+// Teclado
+//======================================================
+
+function controlarTeclado(e) {
+    if (!mapa) return;
+    teclado(e, mapa);
+}
+
+//======================================================
+// Fondo dinámico
+//======================================================
+
+function cambiarColorFondo(texto) {
+    if (texto.length === 0) {
+        document.body.style.backgroundColor = "#2c3e50";
+        return;
+    }
+    const tono = (texto.length * 18) % 360;
+    document.body.style.backgroundColor = `hsl(${tono},45%,30%)`;
+}
+
+//======================================================
+// Botón "Consultar alerta meteorológica"
+//======================================================
+
+function configurarBotonConsulta() {
+    const btn = document.getElementById("btn-test-alerta");
+    if (!btn) return;
+    btn.addEventListener("click", () => consultarEstadoAlerta());
+}
+
+async function consultarEstadoAlerta() {
+    try {
+        const { getFirestore, collection, query, orderBy, limit, getDocs } =
+            await import("https://www.gstatic.com/firebasejs/12.17.0/firebase-firestore.js");
+        const { obtenerApp } = await import("./firebase-app.js");
+
+        const db = getFirestore(obtenerApp());
+        const ref = collection(db, "mensajes_push");
+        const q = query(ref, orderBy("fecha", "desc"), limit(1));
+        const snapshot = await getDocs(q);
+
+        const DURACION_ALERTA_MS = 15 * 60 * 1000;
+
+        if (!snapshot.empty) {
+            const doc = snapshot.docs[0];
+            const data = doc.data();
+            const esAlerta = data.tipo === "alerta" ||
+                (data.nivel && data.nivel !== "normal" && data.nivel !== "vigilancia");
+
+            if (esAlerta) {
+                const timestampInicio = data.timestampInicio || null;
+                const fechaDoc = data.fecha?.toMillis?.() || null;
+                let tiempoRef = timestampInicio || fechaDoc;
+
+                if (tiempoRef) {
+                    const transcurrido = Date.now() - tiempoRef;
+                    if (transcurrido < DURACION_ALERTA_MS) {
+                        mostrarAlertaCompleta({
+                            nivel:           data.nivel || "roja",
+                            titulo:          data.titulo || "⚡ ALERTA DE TORMENTA ELÉCTRICA",
+                            mensaje:         data.cuerpo || "",
+                            distrito:        data.distrito || "",
+                            intensidad:      data.intensidad || "",
+                            lat:             (typeof data.lat === "number") ? data.lat : null,
+                            lng:             (typeof data.lng === "number") ? data.lng : null,
+                            duracionMin:     data.duracionMin || 15,
+                            timestampInicio: timestampInicio,
+                            sectorOriginal:  data.sectorOriginal || null,
+                            inicio:          data.inicio || null,
+                            fin:             data.fin || null,
+                            origen:          data.origen || null
+                        });
+                        return;
+                    }
+                } else {
+                    mostrarAlertaCompleta({
+                        nivel:           data.nivel || "roja",
+                        titulo:          data.titulo || "⚡ ALERTA DE TORMENTA ELÉCTRICA",
+                        mensaje:         data.cuerpo || "",
+                        distrito:        data.distrito || "",
+                        intensidad:      data.intensidad || "",
+                        lat:             (typeof data.lat === "number") ? data.lat : null,
+                        lng:             (typeof data.lng === "number") ? data.lng : null,
+                        duracionMin:     data.duracionMin || 15,
+                        timestampInicio: fechaDoc,
+                        sectorOriginal:  data.sectorOriginal || null,
+                        inicio:          data.inicio || null,
+                        fin:             data.fin || null,
+                        origen:          data.origen || null
+                    });
+                    return;
+                }
+            }
+        }
+
+        mostrarAlertaLibre();
+
+    } catch (e) {
+        console.warn("app.js: error consultando estado de alerta", e);
+        mostrarAlertaLibre();
+    }
+}
+
+configurarBotonConsulta();
+
+//======================================================
+
+iniciar();
