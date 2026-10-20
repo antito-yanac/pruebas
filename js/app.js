@@ -1,8 +1,9 @@
 //======================================================
 // Buscador Lugares Antamina 2026
 // Archivo principal
-// v3: lee window.__APP_CONFIG__ para diferenciar index.html
-//     (modo manual) de keraunos.html (modo scraper).
+// v4: en modo "keraunos" (keraunos.html) NO carga lugares.json
+//     ni el buscador. Solo crea el mapa, pinta zonas2.json y
+//     arranca estado-cliente para leer estado.json.
 //======================================================
 
 import { cargarLugares } from "./data.js";
@@ -46,6 +47,45 @@ async function iniciar() {
 
     try {
 
+        // ==================================================
+        // MODO KERAUNOS (keraunos.html)
+        // - Sin buscador, sin lugares.json
+        // - Solo mapa + zonas2.json + estado.json
+        // ==================================================
+        if (CONFIG.modo === "keraunos") {
+            console.log("[app] modo keraunos: sin buscador ni lugares.json");
+
+            // Ocultar el buscador y stats (por si acaso el HTML los tiene)
+            if (input) input.closest(".search-box")?.style.setProperty("display", "none");
+            if (results) results.style.setProperty("display", "none");
+            if (stats) stats.style.setProperty("display", "none");
+
+            mapa = crearMapa("map");
+
+            // Pintar las 4 zonas de zonas2.json en verde
+            try {
+                const mod = await import("./map.js");
+                if (mod && typeof mod.pintarZonasBaseVerde === "function") {
+                    await mod.pintarZonasBaseVerde();
+                }
+            } catch (e) {
+                console.warn("[app] No se pudieron pintar las zonas base:", e);
+            }
+
+            // Arrancar estado-cliente (lee estado.json cada 30 s)
+            try {
+                iniciarEstadoCliente({ modo: "index" });
+            } catch (e) {
+                console.warn("[app] estado-cliente no arrancó:", e);
+            }
+
+            // No hacer nada más. Sin buscador, sin Firestore, sin lugares.json.
+            return;
+        }
+
+        // ==================================================
+        // MODO MANUAL (index.html) — comportamiento original
+        // ==================================================
         stats.textContent = "Cargando lugares...";
 
         lugares = await cargarLugares();
@@ -64,7 +104,7 @@ async function iniciar() {
             inicializarFirebase().catch(err => console.warn("Firebase:", err.message));
         }
 
-        // estado.json: solo si la config lo pide
+        // estado.json: solo si la config lo pide (index no lo usa)
         if (CONFIG.usarEstadoJSON) {
             try {
                 iniciarEstadoCliente({ modo: "index" });
@@ -73,7 +113,7 @@ async function iniciar() {
             }
         }
 
-        // Pintar las zonas base según el modo
+        // Pintar las zonas base (zonas.json, 3 zonas en modo manual)
         try {
             const mod = await import("./map.js");
             if (mod && typeof mod.pintarZonasBaseVerde === "function") {
@@ -85,22 +125,25 @@ async function iniciar() {
 
     } catch (error) {
         console.error(error);
-        stats.textContent = "Error cargando lugares.json";
+        if (stats) stats.textContent = "Error cargando lugares.json";
     }
 }
 
 //======================================================
-// Eventos
+// Eventos (solo si existen los elementos — en keraunos.html no existen)
 //======================================================
 
-input.addEventListener("input", buscarTexto);
-input.addEventListener("keydown", controlarTeclado);
+if (input) {
+    input.addEventListener("input", buscarTexto);
+    input.addEventListener("keydown", controlarTeclado);
+}
 
 //======================================================
 // Buscar
 //======================================================
 
 function buscarTexto() {
+    if (!buscar || !input) return;
     const texto = input.value.trim();
     cambiarColorFondo(texto);
     buscar(texto, results, mapa, stats);
@@ -111,6 +154,7 @@ function buscarTexto() {
 //======================================================
 
 function controlarTeclado(e) {
+    if (!mapa) return;
     teclado(e, mapa);
 }
 
