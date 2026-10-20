@@ -199,8 +199,9 @@ async function initPanel() {
 
         mostrarEstado("Panel listo. Configura las alertas y envía.", "");
 
-        try { iniciarEstadoCliente({ modo: "admin" }); }
-        catch (e) { console.warn("estado-cliente (admin):", e); }
+        //try { iniciarEstadoCliente({ modo: "admin" }); }
+        //catch (e) { console.warn("estado-cliente (admin):", e); }
+        console.log("[admin] scraper NO se reenvía a Firestore (vive en keraunos.html)");
 
         escucharAlertasActivas();
 
