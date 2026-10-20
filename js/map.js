@@ -1,10 +1,10 @@
 // js/map.js
 // ============================================================
 //  Mapa Leaflet — Antamina
-//  v14:
-//   - fitBounds con invalidateSize + setTimeout (arregla mapa gris en keraunos)
-//   - relleno más transparente (fillOpacity 0.10/0.25) para contraste
-//   - dibuja el punto central (circleMarker) de cada zona si tiene lat/lng
+//  v15:
+//   - fitBounds con invalidateSize + setTimeout
+//   - relleno más transparente para contraste
+//   - puntos centrales con etiquetas permanentes (nombre corto)
 // ============================================================
 
 let map;
@@ -93,6 +93,29 @@ function inyectarEstiloGlow() {
         }
         .al-zona-sin-glow {
             filter: none;
+        }
+
+        /* Etiqueta permanente para los puntos de zona */
+        .leaflet-tooltip.label-punto-mapa {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            color: #1a73e8 !important;
+            font-size: 8px !important;
+            font-weight: 800 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            text-shadow: 
+                -1px -1px 0 #fff,  
+                 1px -1px 0 #fff,
+                -1px  1px 0 #fff,
+                 1px  1px 0 #fff;
+            padding: 0 !important;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        .leaflet-tooltip.label-punto-mapa::before {
+            display: none;
         }
     `;
     document.head.appendChild(style);
@@ -581,7 +604,7 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKe
         dashArray: null
     }).addTo(map);
 
-    // NUEVO: dibujar el punto central si la zona tiene lat/lng
+    // NUEVO: dibujar el punto central con su nombre corto SIEMPRE visible
     let marcadorCentro = null;
     if (zona.lat && zona.lng) {
         marcadorCentro = L.circleMarker([zona.lat, zona.lng], {
@@ -591,6 +614,14 @@ export async function pintarPoligonoZona(nombreZona, color = VERDE_BASE, nivelKe
             fillColor: colorFinal,
             fillOpacity: 0.95
         }).addTo(map);
+
+        // Etiqueta permanente (nombre corto) SIEMPRE visible en azul y 8px
+        marcadorCentro.bindTooltip(zona.nombreCorto || zona.nombre, {
+            permanent: true,
+            direction: "right",
+            offset: [10, 0],
+            className: "label-punto-mapa"
+        });
 
         marcadorCentro.bindPopup(
             `<b>📍 ${zona.nombre}</b><br>` +
