@@ -203,8 +203,53 @@ href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <!-- =========================================================
      MÓDULO PRINCIPAL (al final, cuando todo lo demás existe)
      ========================================================= -->
+<!-- Configuración de la página (debe cargarse ANTES que app.js) -->
+<script src="./js/index-config.js"></script>
+
 <script type="module" src="js/app.js"></script>
-<script type="module" src="js/panico.js"></script>
+      <!-- Botón Consultar Keraunos (abajo-izquierda) -->
+<a href="./keraunos.html" id="btn-consultar-keraunos" title="Consultar Keraunos">
+    🛰️ Consultar Keraunos
+</a>
+
+<style>
+    #btn-consultar-keraunos {
+        position: fixed;
+        bottom: calc(27px + 5px + env(safe-area-inset-bottom, 0px));
+        left: 10px;
+        z-index: 2000;
+
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+
+        background: rgba(255, 255, 255, 0.95);
+        border: 1.5px solid #193344;
+        border-radius: 10px;
+        color: #193344;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+        cursor: pointer;
+        transition: transform 0.15s, filter 0.2s;
+    }
+    #btn-consultar-keraunos:hover {
+        transform: translateY(-2px);
+        filter: brightness(1.05);
+    }
+    #btn-consultar-keraunos:active {
+        transform: scale(0.97);
+    }
+    @media (max-width: 600px) {
+        #btn-consultar-keraunos {
+            font-size: 11px;
+            padding: 7px 10px;
+        }
+    }
+</style>
 </body>
 
 </html>
